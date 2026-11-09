@@ -30,6 +30,10 @@ import com.google.mlkit.nl.translate.Translation
 import com.google.mlkit.nl.translate.TranslateLanguage
 import com.google.mlkit.nl.translate.Translator
 import com.google.mlkit.nl.translate.TranslatorOptions
+import org.json.JSONObject
+import java.net.HttpURLConnection
+import java.net.URLEncoder
+import java.net.URL
 import java.text.Normalizer
 import java.util.Locale
 import java.util.concurrent.atomic.AtomicBoolean
@@ -40,6 +44,7 @@ class ScreenCaptureService : Service() {
         const val EXTRA_DATA = "projection_data"
         private const val CHANNEL_ID = "nexora_capture"
         private const val NOTIFICATION_ID = 71
+        private const val PREFS = "nexora_overlay"
     }
 
     private var projection: MediaProjection? = null
@@ -62,6 +67,8 @@ class ScreenCaptureService : Service() {
     private var tts: TextToSpeech? = null
     @Volatile private var ttsReady = false
     @Volatile private var lastSpoken = ""
+    @Volatile private var lastRawSource = ""
+    @Volatile private var lastSourceAt = 0L
 
     // Player/UI chrome that is not dialogue.
     private val uiWords = setOf(
@@ -106,6 +113,7 @@ class ScreenCaptureService : Service() {
             ?.addOnFailureListener { e -> updateStatus("Çeviri modeli indirilemedi. İnternet bağlantısını kontrol et."); LogStore.append(this, "HATA", "Çeviri modeli indirilemedi: ${e.localizedMessage}") }
         tts = TextToSpeech(applicationContext) { status ->
             if (status == TextToSpeech.SUCCESS) {
+                applyTtsSettings()
                 val res = tts?.setLanguage(Locale("tr", "TR"))
                 ttsReady = res != TextToSpeech.LANG_MISSING_DATA && res != TextToSpeech.LANG_NOT_SUPPORTED
                 if (!ttsReady) LogStore.append(this, "HATA", "TTS Türkçe dili kullanılamıyor (cihazda Türkçe ses verisi olmayabilir)")
@@ -217,9 +225,11 @@ class ScreenCaptureService : Service() {
     private fun cleanupCandidate(raw: String): String {
         var t = raw.replace(Regex("\\s+"), " ").trim()
         // Strip leading HUD/OCR noise: ALL-CAPS gibberish tokens, weapon labels, short junk before real text.
-        t = t.replace(Regex("^(?:[A-Z0-9]{3,}(?:\\s+[A-Z0-9]{2,}){0,3}\\s+)(?=[A-Za-z'\"-])"), "") .trim()
+        t = t.replace(Regex("^(?:[A-Z0-9]{3,}(?:\\s+[A-Z0-9]{2,}){0,3}\\s+)(?=[A-Za-z'\"-])"), "").trim()
         t = t.replace(Regex("^(?:[mM]\\s+)?[A-Z]{2,}[A-Z0-9]*\\s+R\\d+[A-Z]*\\s+[A-Z]+\\s+(?=[A-Za-z])"), "").trim()
         t = t.replace(Regex("^[^A-Za-zÇĞİÖŞÜçğıöşü'\"-]{0,3}"), "").trim()
+        // Common OCR typo: isolated "mny" -> "my"
+        t = t.replace(Regex("\\bmny\\b", RegexOption.IGNORE_CASE), "my")
         // Strip trailing isolated OCR noise tokens/suffixes seen in logs.
         t = t.replace(Regex("(?:\\s+[,.:;|]?\\s*(?:[RrD]|Ri|ri|[A-Z])\\s*[,.:;|]?)+$"), "").trim()
         t = t.replace(Regex("\\s+[|]$"), "").trim()
@@ -298,56 +308,144 @@ class ScreenCaptureService : Service() {
         return false
     }
 
+    private fun mergeContextIfUseful(text: String): String {
+        val now = System.currentTimeMillis()
+        val prev = lastRawSource
+        val dt = now - lastSourceAt
+        lastRawSource = text
+        lastSourceAt = now
+        if (prev.isBlank() || dt > 1800L) return text
+        // If OCR produced a short fragment that looks like a continuation, prefer the longer/combined form.
+        if (text.length < 12 && prev.length >= text.length && prev.lowercase(Locale.ROOT).contains(text.lowercase(Locale.ROOT).take(6))) return prev
+        return text
+    }
+
     private fun handleSubtitle(text: String) {
-        val normalized = dedupKey(text)
+        val merged = mergeContextIfUseful(text)
+        val normalized = dedupKey(merged)
         if (isNearDuplicate(normalized, lastSource) || isNearDuplicate(normalized, lastShownSource)) return
         lastSource = normalized
-        LogStore.append(this, "KAYNAK", text)
+        LogStore.append(this, "KAYNAK", merged)
+        if (translating) {
+            pendingSource = merged
+            return
+        }
+        translate(merged)
+    }
+
+    private fun useOnlineTranslation(): Boolean =
+        getSharedPreferences(PREFS, MODE_PRIVATE).getString("translation_mode", "device") == "online"
+
+    private fun translate(source: String) {
+        translating = true
+        if (useOnlineTranslation()) {
+            workerHandler?.post {
+                val out = translateOnline(source)
+                if (out != null) {
+                    onTranslated(source, out, online = true)
+                } else {
+                    LogStore.append(this, "HATA", "İnternet çevirisi başarısız, cihaz üstü deneniyor: $source")
+                    translateOnDevice(source)
+                }
+            } ?: run { translateOnDevice(source) }
+        } else {
+            translateOnDevice(source)
+        }
+    }
+
+    private fun translateOnDevice(source: String) {
+        val activeTranslator = translator ?: run {
+            translating = false
+            updateStatus(source)
+            LogStore.append(this, "HATA", "Çevirici yok, kaynak gösterildi: $source")
+            return
+        }
         if (!translatorReady) {
-            pendingSource = text
+            translating = false
+            pendingSource = source
             updateStatus("Çeviri modeli hazırlanıyor…")
             return
         }
-        if (translating) {
-            pendingSource = text
-            return
-        }
-        translate(text)
-    }
-
-    private fun translate(source: String) {
-        val activeTranslator = translator ?: run { updateStatus(source); LogStore.append(this, "HATA", "Çevirici yok, kaynak gösterildi: $source"); return }
-        translating = true
         activeTranslator.translate(source)
             .addOnSuccessListener { translated ->
-                if (translated.isNotBlank()) {
-                    lastShownSource = dedupKey(source)
-                    val out = translated.trim()
-                    updateStatus(out)
-                    LogStore.append(this, "CEVIRI", "EN: $source || TR: $out")
-                } else {
+                if (translated.isNotBlank()) onTranslated(source, translated.trim(), online = false)
+                else {
+                    translating = false
                     updateStatus(source)
                     LogStore.append(this, "HATA", "Boş çeviri sonucu, kaynak: $source")
+                    drainPending(source)
                 }
             }
             .addOnFailureListener { e ->
+                translating = false
                 updateStatus("Çeviri başarısız — kaynak: $source")
                 LogStore.append(this, "HATA", "Çeviri başarısız (${e.localizedMessage}): $source")
-            }
-            .addOnCompleteListener {
-                translating = false
-                val next = pendingSource
-                pendingSource = null
-                if (!next.isNullOrBlank() && next != source) translate(next)
+                drainPending(source)
             }
     }
 
+    private fun onTranslated(source: String, out: String, online: Boolean) {
+        lastShownSource = dedupKey(source)
+        updateStatus(out)
+        LogStore.append(this, "CEVIRI", "EN: $source || TR(${if (online) "internet" else "cihaz"}): $out")
+        translating = false
+        drainPending(source)
+    }
+
+    private fun drainPending(done: String) {
+        val next = pendingSource
+        pendingSource = null
+        if (!next.isNullOrBlank() && next != done) translate(next)
+    }
+
+    private fun translateOnline(source: String): String? {
+        // Optional online mode: MyMemory (no key). Text is sent to the service over HTTPS.
+        return try {
+            val q = URLEncoder.encode(source, "UTF-8")
+            val url = URL("https://api.mymemory.translated.net/get?q=$q&langpair=en|tr")
+            val conn = (url.openConnection() as HttpURLConnection).apply {
+                requestMethod = "GET"
+                connectTimeout = 6000
+                readTimeout = 7000
+                setRequestProperty("User-Agent", "NEXORA/1.0")
+            }
+            conn.inputStream.bufferedReader().use { br ->
+                val body = br.readText()
+                val json = JSONObject(body)
+                val status = json.optInt("responseStatus", 0)
+                val translated = json.optJSONObject("responseData")?.optString("translatedText", "") ?: ""
+                if (status == 200 && translated.isNotBlank() && !translated.equals(source, ignoreCase = true)) {
+                    translated.replace("&quot;", "\"").replace("&#39;", "'").replace("&amp;", "&")
+                } else null
+            }
+        } catch (e: Exception) {
+            LogStore.append(this, "HATA", "İnternet çeviri hatası: ${e.localizedMessage}")
+            null
+        }
+    }
+
+    private fun applyTtsSettings() {
+        val prefs = getSharedPreferences(PREFS, MODE_PRIVATE)
+        val wanted = prefs.getString("tts_voice", "") ?: ""
+        try {
+            if (wanted.isNotBlank() && Build.VERSION.SDK_INT >= 21) {
+                val v = tts?.voices?.firstOrNull { it.name == wanted }
+                if (v != null) tts?.voice = v
+            }
+            val rate = prefs.getFloat("tts_rate", 1.0f).coerceIn(0.6f, 1.4f)
+            tts?.setSpeechRate(rate)
+        } catch (_: Exception) {}
+    }
+
     private fun maybeSpeak(text: String) {
-        val enabled = getSharedPreferences("nexora_overlay", MODE_PRIVATE).getBoolean("tts_enabled", false)
+        val enabled = getSharedPreferences(PREFS, MODE_PRIVATE).getBoolean("tts_enabled", false)
         if (!enabled || !ttsReady || text.isBlank() || text == lastSpoken) return
         if (text.startsWith("Hazır") || text.startsWith("Çeviri") || text.startsWith("Ekran") || text.startsWith("Kaynak") || text.startsWith("OCR")) return
         lastSpoken = text
-        try { tts?.speak(text, TextToSpeech.QUEUE_FLUSH, null, "nexora_sub") } catch (_: Exception) {}
+        try {
+            applyTtsSettings()
+            tts?.speak(text, TextToSpeech.QUEUE_FLUSH, null, "nexora_sub")
+        } catch (_: Exception) {}
     }
 
     private fun updateStatus(text: String) {

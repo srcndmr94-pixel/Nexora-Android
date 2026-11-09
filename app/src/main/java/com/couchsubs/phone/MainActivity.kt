@@ -11,6 +11,8 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
+import android.speech.tts.TextToSpeech
+import android.speech.tts.Voice
 import android.view.Gravity
 import android.view.ViewGroup
 import android.widget.Button
@@ -33,6 +35,7 @@ import com.google.mlkit.nl.translate.TranslateRemoteModel
 import com.google.mlkit.nl.translate.Translation
 import com.google.mlkit.nl.translate.TranslatorOptions
 import java.io.File
+import java.util.Locale
 
 class MainActivity : ComponentActivity() {
     private val notificationPermissionCode = 1001
@@ -223,8 +226,50 @@ class MainActivity : ComponentActivity() {
             toast("Seslendirme kapalı")
         })
         styleCard.addView(ttsRow)
+        styleCard.addView(space(6))
+        styleCard.addView(label("Ses seçimi (erkek/kadın — cihazdaki seslere göre)"))
+        val voiceInfo = TextView(this).apply {
+            val v = prefs.getString("tts_voice", "") ?: ""
+            text = if (v.isBlank()) "Varsayılan ses" else "Seçili: $v"
+            setTextColor(Color.parseColor("#94A3B8")); textSize = 12f; setPadding(0,0,0,dp(6))
+        }
+        styleCard.addView(voiceInfo)
+        val voiceList = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        styleCard.addView(voiceList)
+        fun populateVoices(tts: TextToSpeech) {
+            voiceList.removeAllViews()
+            voiceList.addView(smallChoice("Varsayılan ses") {
+                prefs.edit().putString("tts_voice", "").apply(); voiceInfo.text = "Varsayılan ses"; toast("Varsayılan ses")
+            })
+            val voices = try { tts.voices?.filter { it.locale?.language?.startsWith("tr") == true || it.locale == Locale("tr","TR") }?.sortedBy { it.name } ?: emptyList() } catch (_: Exception) { emptyList() }
+            if (voices.isEmpty()) {
+                voiceList.addView(TextView(this).apply { text = "Türkçe ses bulunamadı (cihaz TTS ayarlarından Türkçe ses indirilebilir)."; setTextColor(Color.parseColor("#94A3B8")); textSize=12f; setPadding(0,dp(4),0,0) })
+            } else {
+                for (v in voices.take(12)) {
+                    val label = v.name.take(28)
+                    voiceList.addView(smallChoice(label) {
+                        prefs.edit().putString("tts_voice", v.name).apply(); voiceInfo.text = "Seçili: ${v.name}"; toast("Ses seçildi")
+                    }.apply { layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { bottomMargin = dp(6) } })
+                }
+            }
+        }
+        var tempTts: TextToSpeech? = null
+        styleCard.addView(secondaryButton("Türkçe sesleri listele / yenile") {
+            try { tempTts?.shutdown() } catch (_: Exception) {}
+            tempTts = TextToSpeech(applicationContext) { st ->
+                if (st == TextToSpeech.SUCCESS) runOnUiThread { tempTts?.let { populateVoices(it) } }
+                else runOnUiThread { toast("TTS başlatılamadı") }
+            }
+        }.apply { layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT) })
+        styleCard.addView(space(6))
+        styleCard.addView(label("Konuşma hızı"))
+        val rateRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        for ((lab, rv) in listOf("Yavaş" to 0.85f, "Normal" to 1.0f, "Hızlı" to 1.15f)) {
+            rateRow.addView(smallChoice(lab) { prefs.edit().putFloat("tts_rate", rv).apply(); toast("Hız: $lab") })
+        }
+        styleCard.addView(rateRow)
         styleCard.addView(TextView(this).apply {
-            text = "Not: Seslendirme, telefonundaki Türkçe metin okuma (TTS) özelliğini kullanır. Cihazında Türkçe ses verisi yoksa ses çıkmayabilir."
+            text = "Not: Ses seçimi cihazındaki TTS motoruna bağlıdır. Ekrandaki yazıdan konuşanın erkek/kadın/çocuk olduğunu otomatik anlamak mümkün değil; bu yüzden otomatik eşleştirme yok (ses analizi gerekir). Çocuk sesi ayrı yoksa hız/tonla yaklaşık etki sınırlı olur. Metin, telefonundaki Türkçe TTS ile okunur."
             setTextColor(Color.parseColor("#64748B")); textSize = 12f; setLineSpacing(2f, 1f)
             setPadding(0, dp(6), 0, 0)
         })
@@ -246,6 +291,30 @@ class MainActivity : ComponentActivity() {
         modelCard.addView(space(8))
         modelCard.addView(secondaryButton("Durumu yenile") { refreshModelState() }.apply {
             layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+        })
+
+        val translateCard = card()
+        translateCard.addView(sectionLabel("Çeviri modu"))
+        val modeState = TextView(this).apply {
+            setTextColor(Color.parseColor("#E2E8F0")); textSize = 14f; setLineSpacing(3f, 1f)
+            setPadding(0,0,0,dp(8))
+        }
+        fun refreshModeState() {
+            val m = prefs.getString("translation_mode", "device")
+            modeState.text = if (m == "online")
+                "İnternet modu açık: çeviri daha doğal olabilir; altyazı metni internet servislerine gönderilir (MyMemory). İnternet yoksa/başarısız olursa cihaz üstü denenir."
+            else
+                "Cihaz üstü (anlık): çeviri telefonunda yapılır, internet gerekmez. Kalite modelin sınırlarına bağlıdır."
+        }
+        refreshModeState()
+        translateCard.addView(modeState)
+        val modeRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        modeRow.addView(smallChoice("Cihaz üstü") { prefs.edit().putString("translation_mode", "device").apply(); refreshModeState(); toast("Cihaz üstü çeviri seçildi") })
+        modeRow.addView(smallChoice("İnternet (daha doğal)") { prefs.edit().putString("translation_mode", "online").apply(); refreshModeState(); toast("İnternet çeviri seçildi") })
+        translateCard.addView(modeRow)
+        translateCard.addView(TextView(this).apply {
+            text = "Not: Argo/küfür sansürlenmez; çeviri doğallığı seçilen moda ve kaynağa bağlıdır."
+            setTextColor(Color.parseColor("#64748B")); textSize = 12f; setLineSpacing(2f,1f); setPadding(0,dp(8),0,0)
         })
 
         val logCard = card()
@@ -276,6 +345,8 @@ class MainActivity : ComponentActivity() {
         root.addView(styleCard)
         root.addView(space(14))
         root.addView(modelCard)
+        root.addView(space(14))
+        root.addView(translateCard)
         root.addView(space(14))
         root.addView(logCard)
 
