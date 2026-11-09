@@ -17,11 +17,18 @@ import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
 import android.widget.Button
+import android.widget.HorizontalScrollView
 import android.widget.LinearLayout
 import android.widget.ScrollView
+import android.widget.SeekBar
 import android.widget.TextView
 import android.widget.Toast
-import androidx.core.content.FileProvider
+import com.google.mlkit.common.model.DownloadConditions
+import com.google.mlkit.common.model.RemoteModelManager
+import com.google.mlkit.nl.translate.TranslateLanguage
+import com.google.mlkit.nl.translate.TranslateRemoteModel
+import com.google.mlkit.nl.translate.Translation
+import com.google.mlkit.nl.translate.TranslatorOptions
 import java.io.File
 
 class MainActivity : Activity() {
@@ -31,6 +38,8 @@ class MainActivity : Activity() {
     private lateinit var status: TextView
     private lateinit var notifState: TextView
     private lateinit var overlayState: TextView
+    private lateinit var modelState: TextView
+    private lateinit var preview: TextView
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -50,9 +59,10 @@ class MainActivity : Activity() {
             typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD)
         }
         val subtitle = TextView(this).apply {
-            text = "Oyun ve video altyazılarını ekranda Türkçeye çevirir"
+            text = "Oyun ve video altyazılarını ekranda Türkçeye çevirir (argo/küfür dahil, sansür eklemez)"
             setTextColor(Color.parseColor("#94A3B8"))
             textSize = 15f
+            setLineSpacing(3f, 1f)
             setPadding(0, dp(4), 0, dp(18))
         }
 
@@ -97,6 +107,97 @@ class MainActivity : Activity() {
             LogStore.append(this, "DURUM", "Kullanıcı yakalamayı durdurdu")
         })
 
+        val styleCard = card()
+        styleCard.addView(sectionLabel("Altyazı görünümü"))
+        val prefs = getSharedPreferences("nexora_overlay", MODE_PRIVATE)
+        preview = TextView(this).apply {
+            text = "Örnek: What's up, man? → Naber, dostum?"
+            setTextColor(prefs.getInt("text_color", Color.WHITE))
+            textSize = prefs.getFloat("text_size_sp", 22f)
+            typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD)
+            gravity = Gravity.CENTER
+            setPadding(dp(12), dp(14), dp(12), dp(14))
+            background = GradientDrawable().apply { setColor(Color.argb(225, 12, 12, 11)); cornerRadius = dp(14).toFloat() }
+        }
+        styleCard.addView(preview)
+        styleCard.addView(space(10))
+        styleCard.addView(label("Yazı boyutu"))
+        val sizeSeek = SeekBar(this).apply {
+            max = 26 // 14..40
+            progress = (prefs.getFloat("text_size_sp", 22f) - 14f).toInt().coerceIn(0, 26)
+            setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
+                    val sp = 14f + progress
+                    prefs.edit().putFloat("text_size_sp", sp).apply()
+                    preview.textSize = sp
+                }
+                override fun onStartTrackingTouch(seekBar: SeekBar?) {}
+                override fun onStopTrackingTouch(seekBar: SeekBar?) { toast("Yazı boyutu kaydedildi") }
+            })
+        }
+        styleCard.addView(sizeSeek)
+        styleCard.addView(space(8))
+        styleCard.addView(label("Yazı rengi"))
+        val colors = listOf(
+            "Beyaz" to Color.WHITE,
+            "Sarı" to Color.parseColor("#FDE047"),
+            "Camgöbeği" to Color.parseColor("#67E8F9"),
+            "Yeşil" to Color.parseColor("#86EFAC")
+        )
+        val colorRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        for ((name, c) in colors) {
+            colorRow.addView(smallChoice(name) {
+                prefs.edit().putInt("text_color", c).apply()
+                preview.setTextColor(c)
+                toast("Renk: $name")
+            })
+        }
+        styleCard.addView(HorizontalScrollView(this).apply { isHorizontalScrollBarEnabled = false; addView(colorRow) })
+        styleCard.addView(space(8))
+        styleCard.addView(label("Altyazı alanı (ekrandaki konum)"))
+        val posRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        val positions = listOf("Alt" to "bottom", "Orta" to "middle", "Üst" to "top")
+        for ((name, key) in positions) {
+            posRow.addView(smallChoice(name) {
+                prefs.edit().putString("position", key).apply()
+                toast("Konum: $name (sonraki altyazıda uygulanır)")
+            })
+        }
+        styleCard.addView(posRow)
+        styleCard.addView(space(8))
+        styleCard.addView(label("Dikey konum ince ayarı (kenardan uzaklık)"))
+        val offsetSeek = SeekBar(this).apply {
+            max = 500
+            progress = prefs.getInt("offset_dp", 180).coerceIn(0, 500)
+            setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
+                    prefs.edit().putInt("offset_dp", progress.coerceAtLeast(24)).apply()
+                }
+                override fun onStartTrackingTouch(seekBar: SeekBar?) {}
+                override fun onStopTrackingTouch(seekBar: SeekBar?) { toast("Konum ince ayarı kaydedildi") }
+            })
+        }
+        styleCard.addView(offsetSeek)
+
+        val modelCard = card()
+        modelCard.addView(sectionLabel("Dil paketi (İngilizce → Türkçe)"))
+        modelState = TextView(this).apply {
+            text = "Durum kontrol ediliyor… (çeviri için bu paket gerekir; ilk indirme internet ister)"
+            setTextColor(Color.parseColor("#E2E8F0"))
+            textSize = 14f
+            setLineSpacing(3f, 1f)
+            setPadding(0, 0, 0, dp(10))
+        }
+        modelCard.addView(modelState)
+        modelCard.addView(row(
+            secondaryButton("Paketi indir") { downloadModel() },
+            secondaryButton("Paketi sil") { deleteModel() }
+        ))
+        modelCard.addView(space(8))
+        modelCard.addView(secondaryButton("Durumu yenile") { refreshModelState() }.apply {
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+        })
+
         val logCard = card()
         logCard.addView(sectionLabel("Çalışma ve hata kaydı"))
         val logHint = TextView(this).apply {
@@ -122,23 +223,82 @@ class MainActivity : Activity() {
         root.addView(space(14))
         root.addView(actionCard)
         root.addView(space(14))
+        root.addView(styleCard)
+        root.addView(space(14))
+        root.addView(modelCard)
+        root.addView(space(14))
         root.addView(logCard)
 
         scroll.addView(root)
         setContentView(scroll)
         refreshStates()
+        refreshModelState()
         LogStore.append(this, "DURUM", "Uygulama açıldı")
     }
 
     override fun onResume() {
         super.onResume()
         refreshStates()
+        refreshModelState()
+    }
+
+    private fun refreshModelState() {
+        if (!::modelState.isInitialized) return
+        val model = TranslateRemoteModel.Builder(TranslateLanguage.ENGLISH).build()
+        RemoteModelManager.getInstance().isModelDownloaded(model)
+            .addOnSuccessListener { downloaded ->
+                modelState.text = if (downloaded) "● İngilizce dil paketi indirili — çevrimdışı çeviri hazır."
+                else "○ İngilizce dil paketi indirili değil — “Paketi indir” ile indir (internet gerekir)."
+                modelState.setTextColor(Color.parseColor(if (downloaded) "#86EFAC" else "#FCD34D"))
+            }
+            .addOnFailureListener {
+                modelState.text = "Paket durumu okunamadı. İnternet varsa “Paketi indir” deneyebilirsin."
+                modelState.setTextColor(Color.parseColor("#FCA5A5"))
+            }
+    }
+
+    private fun downloadModel() {
+        modelState.text = "İndiriliyor… (bu işlem birkaç dakika sürebilir)"
+        modelState.setTextColor(Color.parseColor("#E2E8F0"))
+        val options = TranslatorOptions.Builder()
+            .setSourceLanguage(TranslateLanguage.ENGLISH)
+            .setTargetLanguage(TranslateLanguage.TURKISH)
+            .build()
+        val client = Translation.getClient(options)
+        client.downloadModelIfNeeded(DownloadConditions.Builder().build())
+            .addOnSuccessListener {
+                toast("Dil paketi hazır")
+                LogStore.append(this, "DURUM", "Dil paketi indirildi/hazır")
+                refreshModelState()
+                client.close()
+            }
+            .addOnFailureListener { e ->
+                toast("İndirme başarısız: ${e.localizedMessage}")
+                LogStore.append(this, "HATA", "Dil paketi indirilemedi: ${e.localizedMessage}")
+                refreshModelState()
+                client.close()
+            }
+    }
+
+    private fun deleteModel() {
+        val model = TranslateRemoteModel.Builder(TranslateLanguage.ENGLISH).build()
+        RemoteModelManager.getInstance().deleteDownloadedModel(model)
+            .addOnSuccessListener {
+                toast("Dil paketi silindi")
+                LogStore.append(this, "DURUM", "Dil paketi silindi")
+                refreshModelState()
+            }
+            .addOnFailureListener { e ->
+                toast("Silinemedi: ${e.localizedMessage}")
+                LogStore.append(this, "HATA", "Dil paketi silinemedi: ${e.localizedMessage}")
+                refreshModelState()
+            }
     }
 
     private fun startCapture() {
         if (Build.VERSION.SDK_INT >= 33 &&
             checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
-            toast("Önce bildirim iznini ver (durumu görmek için önerilir).")
+            toast("Önce bildirim iznini ver (durum görmek için önerilir).")
         }
         if (!Settings.canDrawOverlays(this)) {
             toast("Önce ekran üstü gösterme iznini ver.")
@@ -227,6 +387,13 @@ class MainActivity : Activity() {
         setPadding(0, 0, 0, dp(8))
     }
 
+    private fun label(t: String) = TextView(this).apply {
+        text = t
+        setTextColor(Color.parseColor("#CBD5E1"))
+        textSize = 13f
+        setPadding(0, dp(2), 0, dp(4))
+    }
+
     private fun stateRow(label: String) = TextView(this).apply {
         text = "○ $label"
         setTextColor(Color.parseColor("#CBD5E1"))
@@ -261,6 +428,21 @@ class MainActivity : Activity() {
         }
         setPadding(dp(12), dp(12), dp(12), dp(12))
         layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { marginEnd = dp(6) }
+        setOnClickListener { onClick() }
+    }
+
+    private fun smallChoice(label: String, onClick: () -> Unit) = Button(this).apply {
+        text = label
+        isAllCaps = false
+        textSize = 13f
+        setTextColor(Color.WHITE)
+        background = GradientDrawable().apply {
+            setColor(Color.parseColor("#1F2937"))
+            cornerRadius = dp(10).toFloat()
+            setStroke(dp(1), Color.parseColor("#334155"))
+        }
+        setPadding(dp(12), dp(8), dp(12), dp(8))
+        layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { marginEnd = dp(6) }
         setOnClickListener { onClick() }
     }
 
