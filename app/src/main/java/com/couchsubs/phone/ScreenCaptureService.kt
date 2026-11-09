@@ -69,6 +69,9 @@ class ScreenCaptureService : Service() {
     @Volatile private var lastSpoken = ""
     @Volatile private var lastRawSource = ""
     @Volatile private var lastSourceAt = 0L
+    @Volatile private var lastSubtitleAt = 0L
+    @Volatile private var showingSubtitle = false
+    private val CLEAR_MS = 2800L
 
     // Player/UI chrome that is not dialogue.
     private val uiWords = setOf(
@@ -157,7 +160,7 @@ class ScreenCaptureService : Service() {
             (getSystemService(WINDOW_SERVICE) as WindowManager).defaultDisplay.getRealMetrics(metrics)
             screenWidth = metrics.widthPixels
             screenHeight = metrics.heightPixels
-            reader = ImageReader.newInstance(screenWidth, screenHeight, PixelFormat.RGBA_8888, 3)
+            reader = ImageReader.newInstance(screenWidth, screenHeight, PixelFormat.RGBA_8888, 2)
             reader?.setOnImageAvailableListener({ source ->
                 val image = source.acquireLatestImage() ?: return@setOnImageAvailableListener
                 if (!processing.compareAndSet(false, true)) {
@@ -192,9 +195,14 @@ class ScreenCaptureService : Service() {
     }
 
     private fun processFrame(bitmap: Bitmap) {
-        // Scan the lower half to catch subtitles in different positions.
+        // Scan the lower half to catch subtitles in different positions; scale down for speed.
         val cropTop = (bitmap.height * 0.45f).toInt()
-        val crop = Bitmap.createBitmap(bitmap, 0, cropTop, bitmap.width, bitmap.height - cropTop)
+        val rawCrop = Bitmap.createBitmap(bitmap, 0, cropTop, bitmap.width, bitmap.height - cropTop)
+        val targetW = 960
+        val crop = if (rawCrop.width > targetW) {
+            val targetH = (rawCrop.height * (targetW.toFloat() / rawCrop.width)).toInt().coerceAtLeast(1)
+            Bitmap.createScaledBitmap(rawCrop, targetW, targetH, true).also { if (it !== rawCrop) rawCrop.recycle() }
+        } else rawCrop
         recognizer.process(InputImage.fromBitmap(crop, 0))
             .addOnSuccessListener { result ->
                 val lines = result.textBlocks.flatMap { block -> block.lines }.map { it.text.trim() }
@@ -202,16 +210,21 @@ class ScreenCaptureService : Service() {
                 val text = pickBestSubtitleCandidate(lines, joined)
                 if (text != null) {
                     handleSubtitle(text)
-                } else if (joined.isNotBlank()) {
-                    val sample = joined.take(120)
+                } else {
                     val now = System.currentTimeMillis()
-                    if (now - lastRejectLogAt > 1500L && sample.length > 3) {
-                        lastRejectLogAt = now
-                        LogStore.append(this, "OCR_ATLANDI", sample)
+                    if (joined.isNotBlank()) {
+                        val sample = joined.take(120)
+                        if (now - lastRejectLogAt > 1500L && sample.length > 3) {
+                            lastRejectLogAt = now
+                            LogStore.append(this, "OCR_ATLANDI", sample)
+                        }
                     }
                     lastSource = ""
-                } else {
-                    lastSource = ""
+                    // Clear stuck subtitle a short time after speech/subtitle disappears.
+                    if (showingSubtitle && now - lastSubtitleAt > CLEAR_MS) {
+                        showingSubtitle = false
+                        overlay?.show("")
+                    }
                 }
             }
             .addOnFailureListener { e -> LogStore.append(this, "HATA", "OCR hatası: ${e.localizedMessage}") }
@@ -386,6 +399,8 @@ class ScreenCaptureService : Service() {
 
     private fun onTranslated(source: String, out: String, online: Boolean) {
         lastShownSource = dedupKey(source)
+        lastSubtitleAt = System.currentTimeMillis()
+        showingSubtitle = true
         updateStatus(out)
         LogStore.append(this, "CEVIRI", "EN: $source || TR(${if (online) "internet" else "cihaz"}): $out")
         translating = false

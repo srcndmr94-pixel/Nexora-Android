@@ -94,6 +94,11 @@ class SubtitleOverlay(private val context: Context) {
     @Synchronized
     fun show(text: String) {
         mainHandler.post {
+            if (text.isBlank()) {
+                view.text = ""
+                view.visibility = View.GONE
+                return@post
+            }
             applyStyle()
             view.text = text
             view.visibility = View.VISIBLE

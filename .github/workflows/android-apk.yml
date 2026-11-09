@@ -17,6 +17,17 @@ jobs:
         with:
           java-version: '17'
           distribution: 'temurin'
+      - name: Cache Android debug keystore (stable signature for updates)
+        uses: actions/cache@v4
+        with:
+          path: ~/.android
+          key: nexora-android-debug-keystore-v1
+      - name: Ensure debug keystore exists
+        run: |
+          mkdir -p ~/.android
+          if [ ! -f ~/.android/debug.keystore ]; then
+            keytool -genkeypair -v -keystore ~/.android/debug.keystore -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
+          fi
       - uses: gradle/actions/setup-gradle@v3
         with:
           gradle-version: '8.9'
