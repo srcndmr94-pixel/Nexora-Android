@@ -216,9 +216,15 @@ class ScreenCaptureService : Service() {
 
     private fun cleanupCandidate(raw: String): String {
         var t = raw.replace(Regex("\\s+"), " ").trim()
-        // Strip trailing isolated OCR noise tokens seen in logs.
-        t = t.replace(Regex("(?:\\s+[,.:;]?\\s*[RrD]\\s*[,.:;]?)+$"), "").trim()
+        // Strip leading HUD/OCR noise: ALL-CAPS gibberish tokens, weapon labels, short junk before real text.
+        t = t.replace(Regex("^(?:[A-Z0-9]{3,}(?:\\s+[A-Z0-9]{2,}){0,3}\\s+)(?=[A-Za-z'\"-])"), "") .trim()
+        t = t.replace(Regex("^(?:[mM]\\s+)?[A-Z]{2,}[A-Z0-9]*\\s+R\\d+[A-Z]*\\s+[A-Z]+\\s+(?=[A-Za-z])"), "").trim()
+        t = t.replace(Regex("^[^A-Za-zÇĞİÖŞÜçğıöşü'\"-]{0,3}"), "").trim()
+        // Strip trailing isolated OCR noise tokens/suffixes seen in logs.
+        t = t.replace(Regex("(?:\\s+[,.:;|]?\\s*(?:[RrD]|Ri|ri|[A-Z])\\s*[,.:;|]?)+$"), "").trim()
+        t = t.replace(Regex("\\s+[|]$"), "").trim()
         t = t.replace(Regex("\\s+\\d{1,2}$"), "").trim() // stray small OCR numbers at end
+        t = t.replace(Regex("\\s+"), " ").trim()
         return t
     }
 
@@ -246,9 +252,11 @@ class ScreenCaptureService : Service() {
         if (text.matches(Regex("^[\\d:\\s/.,-]+$"))) return false
         val lower = Normalizer.normalize(text, Normalizer.Form.NFKC).lowercase(Locale.ROOT)
         val compact = lower.replace(Regex("\\s+"), " ")
-        // Skip obvious app/chrome UI.
+        // Skip obvious app/chrome/UI overlays.
         if (turkishUiHints.any { compact.contains(it) }) return false
         if (Regex("\\b\\d[\\d.,]*\\s*(b|mn|bin|milyon|k)?\\b.*\\b(izlendi|gün|saat|dakika)\\b").containsMatchIn(compact)) return false
+        if (Regex("\\b(sorting|challenge|challengeg|show products|other videos)\\b").containsMatchIn(compact)) return false
+        if (Regex("^[A-Z0-9\\s]{6,}$").matches(text) && text.count { it.isLetter() } < 10) return false
         if (compact.startsWith("#") && compact.count { it == '#' } >= 1 && compact.count { it.isLetter() && it.code < 128 } < 8) return false
         val hasTurkishChars = Regex("[çğıöşü]").containsMatchIn(lower)
         val wordsAscii = lower.split(Regex("[^a-z']+")).filter { it.isNotBlank() }
@@ -274,9 +282,25 @@ class ScreenCaptureService : Service() {
         return true
     }
 
+    private fun dedupKey(text: String): String {
+        var n = Normalizer.normalize(text, Normalizer.Form.NFKC).lowercase(Locale.ROOT)
+        n = n.replace(Regex("[^a-z0-9çğıöşü' ]+"), " ")
+        n = n.replace(Regex("\\s+"), " ").trim()
+        // drop very short leading/trailing OCR noise tokens
+        n = n.replace(Regex("^[a-z]{1,2}\\s+"), "").trim()
+        return n
+    }
+
+    private fun isNearDuplicate(a: String, b: String): Boolean {
+        if (a == b) return true
+        if (a.isBlank() || b.isBlank()) return false
+        if (a.startsWith(b) || b.startsWith(a)) return kotlin.math.abs(a.length - b.length) <= 4
+        return false
+    }
+
     private fun handleSubtitle(text: String) {
-        val normalized = Normalizer.normalize(text, Normalizer.Form.NFKC).lowercase(Locale.ROOT)
-        if (normalized == lastSource || normalized == lastShownSource) return
+        val normalized = dedupKey(text)
+        if (isNearDuplicate(normalized, lastSource) || isNearDuplicate(normalized, lastShownSource)) return
         lastSource = normalized
         LogStore.append(this, "KAYNAK", text)
         if (!translatorReady) {
@@ -297,7 +321,7 @@ class ScreenCaptureService : Service() {
         activeTranslator.translate(source)
             .addOnSuccessListener { translated ->
                 if (translated.isNotBlank()) {
-                    lastShownSource = Normalizer.normalize(source, Normalizer.Form.NFKC).lowercase(Locale.ROOT)
+                    lastShownSource = dedupKey(source)
                     val out = translated.trim()
                     updateStatus(out)
                     LogStore.append(this, "CEVIRI", "EN: $source || TR: $out")
