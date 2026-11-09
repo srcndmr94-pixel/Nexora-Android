@@ -57,6 +57,7 @@ class ScreenCaptureService : Service() {
     private var pendingSource: String? = null
     private var screenWidth = 0
     private var screenHeight = 0
+    @Volatile private var lastRejectLogAt = 0L
 
     // Player/UI chrome that is not dialogue.
     private val uiWords = setOf(
@@ -67,7 +68,19 @@ class ScreenCaptureService : Service() {
         "attack", "block", "parry", "aim", "reload", "climb", "vault", "grapple",
         "subscribe", "share", "like", "dislike", "comments", "comment", "next", "previous",
         "play", "pause", "replay", "skip", "quality", "autoplay", "captions", "subtitle",
-        "subtitles", "fullscreen", "live", "views", "ago"
+        "subtitles", "fullscreen", "live", "views", "ago", "remix", "download", "report"
+    )
+    private val turkishUiHints = listOf(
+        "abone ol", "yorum yaz", "yorumlar", "izlendi", "paylaş", "kaydet", "beğendiğim",
+        "gün önce", "saat önce", "dakika önce", "diğer videolar", "ürünleri göster",
+        "kitaplık", "daha sonra izle", "gizli", "rozetler", "canlı", "kısaca"
+    )
+    private val englishDialogueMarkers = setOf(
+        "i", "you", "he", "she", "we", "they", "me", "my", "your", "his", "her", "our", "their",
+        "the", "a", "an", "to", "for", "and", "but", "or", "so", "if", "is", "are", "was", "were",
+        "do", "don't", "dont", "did", "didn't", "didnt", "can", "can't", "cant", "will", "won't",
+        "wont", "have", "has", "had", "it", "it's", "its", "this", "that", "what", "where", "why",
+        "who", "how", "all", "just", "here", "there", "now", "right", "man", "no", "yeah", "let"
     )
 
     override fun onCreate() {
@@ -168,9 +181,12 @@ class ScreenCaptureService : Service() {
                 if (text != null) {
                     handleSubtitle(text)
                 } else if (joined.isNotBlank()) {
-                    // Keep a light trace of rejected OCR to help tune filtering.
                     val sample = joined.take(120)
-                    LogStore.append(this, "OCR_ATLANDI", sample)
+                    val now = System.currentTimeMillis()
+                    if (now - lastRejectLogAt > 1500L && sample.length > 3) {
+                        lastRejectLogAt = now
+                        LogStore.append(this, "OCR_ATLANDI", sample)
+                    }
                     lastSource = ""
                 } else {
                     lastSource = ""
@@ -184,39 +200,64 @@ class ScreenCaptureService : Service() {
             }
     }
 
+    private fun cleanupCandidate(raw: String): String {
+        var t = raw.replace(Regex("\\s+"), " ").trim()
+        // Strip trailing isolated OCR noise tokens seen in logs.
+        t = t.replace(Regex("(?:\\s+[,.:;]?\\s*[RrD]\\s*[,.:;]?)+$"), "").trim()
+        t = t.replace(Regex("\\s+\\d{1,2}$"), "").trim() // stray small OCR numbers at end
+        return t
+    }
+
     private fun pickBestSubtitleCandidate(lines: List<String>, joined: String): String? {
-        if (isLikelySubtitle(joined)) return joined
+        val cleanJoined = cleanupCandidate(joined)
+        if (isLikelySubtitle(cleanJoined)) return cleanJoined
         // Try individual/combined lines in case joined text includes player chrome.
-        val cleaned = lines.map { it.replace(Regex("\\s+"), " ").trim() }
-            .filter { it.isNotBlank() }
+        val cleaned = lines.map { cleanupCandidate(it) }.filter { it.isNotBlank() }
         for (line in cleaned.sortedByDescending { it.length }) {
             if (isLikelySubtitle(line)) return line
         }
         // Try adjacent line pairs (subtitles sometimes split across OCR lines).
         for (i in 0 until (cleaned.size - 1)) {
-            val pair = (cleaned[i] + " " + cleaned[i + 1]).trim()
+            val pair = cleanupCandidate(cleaned[i] + " " + cleaned[i + 1])
             if (isLikelySubtitle(pair)) return pair
         }
         return null
     }
 
     private fun isLikelySubtitle(raw: String): Boolean {
-        val text = raw.trim()
-        if (text.length < 4 || text.length > 280) return false
+        val text = cleanupCandidate(raw)
+        if (text.length < 6 || text.length > 280) return false
         // Ignore timecodes/progress like 0:12, 1:23:45, 12:34 / 56:78.
-        if (text.matches(Regex("^[\\d:\\s/.-]+$"))) return false
-        val normalized = Normalizer.normalize(text, Normalizer.Form.NFKC).lowercase(Locale.ENGLISH)
-        val words = normalized.split(Regex("[^a-z']+")).filter { it.isNotBlank() }
-        if (words.size < 2) return false
-        // Exclude button prompts such as "X Exit See Shop" and "O Dive / Swim Up".
-        val uiCount = words.count { it in uiWords }
+        if (Regex("\\d{1,2}:\\d{2}").containsMatchIn(text) && text.count { it.isLetter() } < 12) return false
+        if (text.matches(Regex("^[\\d:\\s/.,-]+$"))) return false
+        val lower = Normalizer.normalize(text, Normalizer.Form.NFKC).lowercase(Locale.ROOT)
+        val compact = lower.replace(Regex("\\s+"), " ")
+        // Skip obvious app/chrome UI.
+        if (turkishUiHints.any { compact.contains(it) }) return false
+        if (Regex("\\b\\d[\\d.,]*\\s*(b|mn|bin|milyon|k)?\\b.*\\b(izlendi|gün|saat|dakika)\\b").containsMatchIn(compact)) return false
+        if (compact.startsWith("#") && compact.count { it == '#' } >= 1 && compact.count { it.isLetter() && it.code < 128 } < 8) return false
+        val hasTurkishChars = Regex("[çğıöşü]").containsMatchIn(lower)
+        val wordsAscii = lower.split(Regex("[^a-z']+")).filter { it.isNotBlank() }
+        val uiCount = wordsAscii.count { it in uiWords }
         val buttonPrefix = Regex("^(?:[xyoab]|l[123]|r[123]|lt|rt)\\s+", RegexOption.IGNORE_CASE).containsMatchIn(text)
         if (buttonPrefix && uiCount > 0) return false
-        if (words.size <= 6 && uiCount >= 2) return false
-        if (normalized.matches(Regex("^[xyob a]+$"))) return false
+        if (wordsAscii.size in 1..6 && uiCount >= 2) return false
+        if (lower.matches(Regex("^[xyob a\\d,.:;]+$"))) return false
         val letters = text.count { it.isLetter() }
-        if (letters < 6) return false
-        return words.count { it.length >= 2 } >= 2
+        if (letters < 8) return false
+        val letterRatio = letters.toFloat() / text.length.coerceAtLeast(1)
+        if (letterRatio < 0.45f) return false
+        val markerCount = wordsAscii.count { it in englishDialogueMarkers }
+        // If it looks Turkish-heavy UI/text and lacks clear English dialogue markers, skip.
+        if (hasTurkishChars && markerCount < 2) return false
+        // Require subtitle/dialogue-like English: enough words and some common markers,
+        // or a clear sentence shape.
+        val hasSentencePunct = Regex("[.?!]$").containsMatchIn(text) || text.contains('?') || text.contains('!')
+        val looksLikeDialogue = markerCount >= 2 || (wordsAscii.size >= 5 && markerCount >= 1) || hasSentencePunct
+        if (!looksLikeDialogue) return false
+        // Avoid hashtag/label soup.
+        if (text.count { it == '#' } >= 2) return false
+        return true
     }
 
     private fun handleSubtitle(text: String) {
