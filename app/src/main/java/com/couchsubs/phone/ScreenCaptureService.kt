@@ -83,9 +83,10 @@ class ScreenCaptureService : Service() {
         translator = Translation.getClient(options)
         // Model download is asynchronous. Never attempt translation before it is ready.
         updateStatus("Çeviri modeli hazırlanıyor (ilk seferde indirme gerekir)…")
+        LogStore.append(this, "DURUM", "Servis oluşturuldu, çeviri modeli kontrol ediliyor")
         translator?.downloadModelIfNeeded(DownloadConditions.Builder().build())
-            ?.addOnSuccessListener { translatorReady = true; updateStatus("Hazır — altyazı bekleniyor") }
-            ?.addOnFailureListener { updateStatus("Çeviri modeli indirilemedi. İnternet bağlantısını kontrol et.") }
+            ?.addOnSuccessListener { translatorReady = true; updateStatus("Hazır — altyazı bekleniyor"); LogStore.append(this, "DURUM", "Çeviri modeli hazır") }
+            ?.addOnFailureListener { e -> updateStatus("Çeviri modeli indirilemedi. İnternet bağlantısını kontrol et."); LogStore.append(this, "HATA", "Çeviri modeli indirilemedi: ${e.localizedMessage}") }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -98,6 +99,7 @@ class ScreenCaptureService : Service() {
         val data = projectionDataFrom(intent)
         if (data == null || resultCode == 0) {
             updateStatus("Ekran yakalama izni alınamadı. NEXORA'yı yeniden başlat.")
+            LogStore.append(this, "HATA", "Ekran yakalama verisi alınamadı")
             stopSelf()
             return START_NOT_STICKY
         }
@@ -137,17 +139,19 @@ class ScreenCaptureService : Service() {
                 } ?: run { image.close(); processing.set(false) }
             }, workerHandler)
             projection?.registerCallback(object : MediaProjection.Callback() {
-                override fun onStop() { updateStatus("Ekran yakalama durduruldu."); stopSelf() }
+                override fun onStop() { updateStatus("Ekran yakalama durduruldu."); LogStore.append(this@ScreenCaptureService, "DURUM", "MediaProjection durdu"); stopSelf() }
             }, workerHandler)
             virtualDisplay = projection?.createVirtualDisplay(
                 "NEXORA-Capture", screenWidth, screenHeight, metrics.densityDpi,
                 DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
                 reader?.surface, null, workerHandler
             )
+            LogStore.append(this, "DURUM", "Ekran yakalama başladı ${screenWidth}x${screenHeight}")
             if (translatorReady) updateStatus("Hazır — altyazı bekleniyor")
             else updateStatus("Yakalama açık — çeviri modeli hazırlanıyor…")
         }.onFailure {
             updateStatus("Ekran yakalama başlatılamadı: ${it.localizedMessage ?: "bilinmeyen hata"}")
+            LogStore.append(this, "HATA", "Ekran yakalama başlatılamadı: ${it.localizedMessage}")
             stopSelf()
         }
     }
@@ -161,10 +165,18 @@ class ScreenCaptureService : Service() {
                 val lines = result.textBlocks.flatMap { block -> block.lines }.map { it.text.trim() }
                 val joined = lines.joinToString(" ").replace(Regex("\\s+"), " ").trim()
                 val text = pickBestSubtitleCandidate(lines, joined)
-                if (text != null) handleSubtitle(text)
-                else if (joined.isBlank()) lastSource = ""
+                if (text != null) {
+                    handleSubtitle(text)
+                } else if (joined.isNotBlank()) {
+                    // Keep a light trace of rejected OCR to help tune filtering.
+                    val sample = joined.take(120)
+                    LogStore.append(this, "OCR_ATLANDI", sample)
+                    lastSource = ""
+                } else {
+                    lastSource = ""
+                }
             }
-            .addOnFailureListener { /* keep last status; transient frame errors are common */ }
+            .addOnFailureListener { e -> LogStore.append(this, "HATA", "OCR hatası: ${e.localizedMessage}") }
             .addOnCompleteListener {
                 crop.recycle()
                 bitmap.recycle()
@@ -211,6 +223,7 @@ class ScreenCaptureService : Service() {
         val normalized = Normalizer.normalize(text, Normalizer.Form.NFKC).lowercase(Locale.ROOT)
         if (normalized == lastSource || normalized == lastShownSource) return
         lastSource = normalized
+        LogStore.append(this, "KAYNAK", text)
         if (!translatorReady) {
             pendingSource = text
             updateStatus("Çeviri modeli hazırlanıyor…")
@@ -224,16 +237,24 @@ class ScreenCaptureService : Service() {
     }
 
     private fun translate(source: String) {
-        val activeTranslator = translator ?: run { updateStatus(source); return }
+        val activeTranslator = translator ?: run { updateStatus(source); LogStore.append(this, "HATA", "Çevirici yok, kaynak gösterildi: $source"); return }
         translating = true
         activeTranslator.translate(source)
             .addOnSuccessListener { translated ->
                 if (translated.isNotBlank()) {
                     lastShownSource = Normalizer.normalize(source, Normalizer.Form.NFKC).lowercase(Locale.ROOT)
-                    updateStatus(translated.trim())
-                } else updateStatus(source)
+                    val out = translated.trim()
+                    updateStatus(out)
+                    LogStore.append(this, "CEVIRI", "EN: $source || TR: $out")
+                } else {
+                    updateStatus(source)
+                    LogStore.append(this, "HATA", "Boş çeviri sonucu, kaynak: $source")
+                }
             }
-            .addOnFailureListener { updateStatus("Çeviri başarısız — kaynak: $source") }
+            .addOnFailureListener { e ->
+                updateStatus("Çeviri başarısız — kaynak: $source")
+                LogStore.append(this, "HATA", "Çeviri başarısız (${e.localizedMessage}): $source")
+            }
             .addOnCompleteListener {
                 translating = false
                 val next = pendingSource
@@ -259,7 +280,7 @@ class ScreenCaptureService : Service() {
         val result = Bitmap.createBitmap(padded, 0, 0, image.width, image.height)
         padded.recycle()
         result
-    } catch (_: Exception) { null }
+    } catch (e: Exception) { LogStore.append(this, "HATA", "Kare dönüştürülemedi: ${e.localizedMessage}"); null }
 
     private fun createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= 26) {
@@ -277,6 +298,7 @@ class ScreenCaptureService : Service() {
         .build()
 
     override fun onDestroy() {
+        LogStore.append(this, "DURUM", "Servis durduruluyor")
         virtualDisplay?.release()
         reader?.setOnImageAvailableListener(null, null)
         reader?.close()
