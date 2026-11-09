@@ -235,11 +235,27 @@ class ScreenCaptureService : Service() {
             }
     }
 
+    private val buttonPromptRegex = Regex(
+        """(?ix)
+        \b(?:L[123]|R[123]|LB|RB|LT|RT|L\s*STICK|R\s*STICK)\b
+        | \b(?:STUDY|PRAISE|SCOLD|PET|KNOCK|OPEN|TAKE|TALK|SEARCH|HOLD|PRESS|PICK\s*UP|DROP\s*OFF|CALL|PHONE|PALM|RETURN|MOUNT|DISMOUNT)\b \s* (?:\(?\s*(?:L[123]|R[123]|[XYOAB△□○×])\s*\)? | \b[A-Z]{1,3}\d?\b)?
+        | \bDOG\s*\(?\s*L?\d*\s*\)?
+        | (?:^|[ \t])\(?(?:[XYOAB△□○×]|R|L)\)?(?:[ \t]|$)
+        """
+    )
+    private val ratingChromeRegex = Regex("(?i)\\b(mature\\s*17\\+|may\\s*contain\\s*content|inappropriate\\s*for\\s*children|esrb\\.org|likely\\s*mature)\\b")
+
     private fun cleanupCandidate(raw: String): String {
         var t = raw.replace(Regex("\\s+"), " ").trim()
         // Strip leading HUD/OCR noise: ALL-CAPS gibberish tokens, weapon labels, short junk before real text.
         t = t.replace(Regex("^(?:[A-Z0-9]{3,}(?:\\s+[A-Z0-9]{2,}){0,3}\\s+)(?=[A-Za-z'\"-])"), "").trim()
         t = t.replace(Regex("^(?:[mM]\\s+)?[A-Z]{2,}[A-Z0-9]*\\s+R\\d+[A-Z]*\\s+[A-Z]+\\s+(?=[A-Za-z])"), "").trim()
+        // Strip embedded/trailing key-prompt chrome (R1, L2, STUDY R, DOG(L2), isolated R, etc.).
+        t = t.replace(Regex("(?i)\\b(?:STUDY|PRAISE|SCOLD|PET|KNOCK|CALL|PHONE|PALM|RETURN)\\b(?:\\s*\\(?\\s*[A-Z0-9]{1,3}\\s*\\)?)*"), " ")
+        t = t.replace(Regex("(?i)\\bDOG\\s*\\(?\\s*L?\\d*\\s*\\)?"), " ")
+        t = t.replace(Regex("\\b[LR][123]\\b"), " ")
+        t = t.replace(Regex("(?<=\\s)[Rr](?=\\s|$)"), " ")
+        t = t.replace(Regex("\\s*[()]+\\s*"), " ")
         t = t.replace(Regex("^[^A-Za-zÇĞİÖŞÜçğıöşü'\"-]{0,3}"), "").trim()
         // Common OCR typo: isolated "mny" -> "my"
         t = t.replace(Regex("\\bmny\\b", RegexOption.IGNORE_CASE), "my")
@@ -249,6 +265,27 @@ class ScreenCaptureService : Service() {
         t = t.replace(Regex("\\s+\\d{1,2}$"), "").trim() // stray small OCR numbers at end
         t = t.replace(Regex("\\s+"), " ").trim()
         return t
+    }
+
+    private fun looksLikeHudPrompt(text: String): Boolean {
+        val lower = Normalizer.normalize(text, Normalizer.Form.NFKC).lowercase(Locale.ROOT)
+        if (ratingChromeRegex.containsMatchIn(lower)) return true
+        val tokens = lower.split(Regex("[^a-z0-9]+")).filter { it.isNotBlank() }
+        if (tokens.isEmpty()) return true
+        val promptTokens = setOf(
+            "l1","l2","l3","r1","r2","r3","lb","rb","lt","rt","x","y","a","b","o",
+            "study","praise","scold","pet","knock","open","take","talk","search","hold","press",
+            "pickup","drop","call","phone","palm","return","dog","mount","dismount"
+        )
+        val promptCount = tokens.count { it in promptTokens }
+        val dialogueCount = tokens.count { it in englishDialogueMarkers }
+        if (promptCount >= 2 && dialogueCount < 3) return true
+        if (promptCount >= 1 && tokens.size <= 4) return true
+        // Mostly ALL CAPS HUD labels / fragmented OCR.
+        val letters = text.count { it.isLetter() }
+        val upper = text.count { it.isUpperCase() }
+        if (letters >= 6 && upper > letters * 0.75 && dialogueCount < 3 && tokens.size <= 8) return true
+        return false
     }
 
     private fun pickBestSubtitleCandidate(lines: List<String>, joined: String): String? {
@@ -264,6 +301,9 @@ class ScreenCaptureService : Service() {
             val pair = cleanupCandidate(cleaned[i] + " " + cleaned[i + 1])
             if (isLikelySubtitle(pair)) return pair
         }
+        // Fallback: remove prompt chrome from the joined text and re-check.
+        val stripped = cleanupCandidate(buttonPromptRegex.replace(joined, " "))
+        if (stripped != cleanJoined && isLikelySubtitle(stripped)) return stripped
         return null
     }
 
@@ -273,6 +313,7 @@ class ScreenCaptureService : Service() {
         // Ignore timecodes/progress like 0:12, 1:23:45, 12:34 / 56:78.
         if (Regex("\\d{1,2}:\\d{2}").containsMatchIn(text) && text.count { it.isLetter() } < 12) return false
         if (text.matches(Regex("^[\\d:\\s/.,-]+$"))) return false
+        if (looksLikeHudPrompt(text)) return false
         val lower = Normalizer.normalize(text, Normalizer.Form.NFKC).lowercase(Locale.ROOT)
         val compact = lower.replace(Regex("\\s+"), " ")
         // Skip obvious app/chrome/UI overlays.
@@ -415,6 +456,7 @@ class ScreenCaptureService : Service() {
 
     private fun translateOnline(source: String): String? {
         // Optional online mode: MyMemory (no key). Text is sent to the service over HTTPS.
+        // No masking/censorship is applied; the translation is shown as returned (decoded).
         return try {
             val q = URLEncoder.encode(source, "UTF-8")
             val url = URL("https://api.mymemory.translated.net/get?q=$q&langpair=en|tr")
@@ -430,7 +472,10 @@ class ScreenCaptureService : Service() {
                 val status = json.optInt("responseStatus", 0)
                 val translated = json.optJSONObject("responseData")?.optString("translatedText", "") ?: ""
                 if (status == 200 && translated.isNotBlank() && !translated.equals(source, ignoreCase = true)) {
-                    translated.replace("&quot;", "\"").replace("&#39;", "'").replace("&amp;", "&")
+                    translated
+                        .replace("&#10;", "\n").replace("&#13;", "")
+                        .replace("&quot;", "\"").replace("&#39;", "'").replace("&apos;", "'")
+                        .replace("&amp;", "&").trim()
                 } else null
             }
         } catch (e: Exception) {

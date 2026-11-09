@@ -38,44 +38,21 @@ class SubtitleOverlay(private val context: Context) {
 
     private fun dp(v: Int): Int = (v * context.resources.displayMetrics.density).toInt()
 
-    private fun applyStyle() {
-        val size = prefs.getFloat("text_size_sp", 22f).coerceIn(14f, 40f)
-        val color = prefs.getInt("text_color", Color.WHITE)
-        val position = prefs.getString("position", "bottom") ?: "bottom"
-        val offsetDp = prefs.getInt("offset_dp", 180).coerceIn(0, 800)
-        view.textSize = size
-        view.setTextColor(color)
-        view.invalidate()
-        val (gravity, y) = when (position) {
-            "top" -> (Gravity.TOP or Gravity.CENTER_HORIZONTAL) to dp(offsetDp.coerceAtMost(300).coerceAtLeast(24))
-            "middle" -> (Gravity.CENTER_VERTICAL or Gravity.CENTER_HORIZONTAL) to 0
-            else -> (Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL) to dp(offsetDp.coerceAtLeast(60))
-        }
-        val lp = layoutParams
-        if (lp != null) {
-            lp.gravity = gravity
-            lp.x = 0
-            lp.y = y
-        }
-    }
-
-    private fun ensureParams(): WindowManager.LayoutParams {
-        val existing = layoutParams
-        if (existing != null) return existing
+    private fun buildParams(): WindowManager.LayoutParams {
         val type = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
         } else {
             @Suppress("DEPRECATION")
             WindowManager.LayoutParams.TYPE_PHONE
         }
-        val position = prefs.getString("position", "bottom") ?: "bottom"
-        val offsetDp = prefs.getInt("offset_dp", 180).coerceIn(0, 800)
+        val position = (prefs.getString("position", "bottom") ?: "bottom").trim().lowercase()
+        val rawOffset = prefs.getInt("offset_dp", 120)
         val (gravity, y) = when (position) {
-            "top" -> (Gravity.TOP or Gravity.CENTER_HORIZONTAL) to dp(offsetDp.coerceAtMost(300).coerceAtLeast(24))
-            "middle" -> (Gravity.CENTER_VERTICAL or Gravity.CENTER_HORIZONTAL) to 0
-            else -> (Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL) to dp(offsetDp.coerceAtLeast(60))
+            "top" -> (Gravity.TOP or Gravity.CENTER_HORIZONTAL) to dp(rawOffset.coerceIn(16, 320))
+            "middle", "center", "orta" -> (Gravity.CENTER_VERTICAL or Gravity.CENTER_HORIZONTAL) to 0
+            else -> (Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL) to dp(rawOffset.coerceIn(40, 320))
         }
-        return WindowManager.LayoutParams(
+        val lp = layoutParams ?: WindowManager.LayoutParams(
             WindowManager.LayoutParams.MATCH_PARENT,
             WindowManager.LayoutParams.WRAP_CONTENT,
             type,
@@ -84,11 +61,19 @@ class SubtitleOverlay(private val context: Context) {
                 WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
                 WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
             PixelFormat.TRANSLUCENT
-        ).apply {
-            this.gravity = gravity
-            this.x = 0
-            this.y = y
-        }.also { layoutParams = it }
+        ).also { layoutParams = it }
+        lp.gravity = gravity
+        lp.x = 0
+        lp.y = y
+        return lp
+    }
+
+    private fun applyStyle() {
+        val size = prefs.getFloat("text_size_sp", 22f).coerceIn(14f, 40f)
+        val color = prefs.getInt("text_color", Color.WHITE)
+        view.textSize = size
+        view.setTextColor(color)
+        view.invalidate()
     }
 
     @Synchronized
@@ -103,8 +88,7 @@ class SubtitleOverlay(private val context: Context) {
             view.text = text
             view.visibility = View.VISIBLE
             view.bringToFront()
-            val params = ensureParams()
-            applyStyle()
+            val params = buildParams()
             if (attached) {
                 try { windowManager.updateViewLayout(view, params) } catch (_: Exception) {}
                 return@post
