@@ -1,0 +1,52 @@
+name: NEXORA Android APK
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "*.zip"
+      - ".github/workflows/android-apk.yml"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Extract source ZIP
+        run: |
+          ZIP=$(find . -maxdepth 2 -iname "*.zip" -type f | head -n 1)
+          if [ -z "$ZIP" ]; then
+            echo "ZIP dosyası bulunamadı."
+            exit 1
+          fi
+          mkdir source
+          unzip -q "$ZIP" -d source
+          ROOT=$(find source -name settings.gradle -o -name settings.gradle.kts | head -n 1)
+          if [ -z "$ROOT" ]; then
+            echo "Gradle proje dosyası bulunamadı."
+            exit 1
+          fi
+          echo "PROJECT_DIR=$(dirname "$ROOT")" >> "$GITHUB_ENV"
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.9"
+
+      - name: Build APK
+        run: gradle -p "$PROJECT_DIR" assembleDebug
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: NEXORA-APK
+          path: "**/build/outputs/apk/debug/*.apk"
