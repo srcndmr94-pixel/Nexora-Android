@@ -18,6 +18,7 @@ import android.os.Build
 import android.os.Handler
 import android.os.HandlerThread
 import android.os.IBinder
+import android.speech.tts.TextToSpeech
 import android.util.DisplayMetrics
 import android.view.WindowManager
 import androidx.core.app.NotificationCompat
@@ -58,6 +59,9 @@ class ScreenCaptureService : Service() {
     private var screenWidth = 0
     private var screenHeight = 0
     @Volatile private var lastRejectLogAt = 0L
+    private var tts: TextToSpeech? = null
+    @Volatile private var ttsReady = false
+    @Volatile private var lastSpoken = ""
 
     // Player/UI chrome that is not dialogue.
     private val uiWords = setOf(
@@ -100,6 +104,16 @@ class ScreenCaptureService : Service() {
         translator?.downloadModelIfNeeded(DownloadConditions.Builder().build())
             ?.addOnSuccessListener { translatorReady = true; updateStatus("Hazır — altyazı bekleniyor"); LogStore.append(this, "DURUM", "Çeviri modeli hazır") }
             ?.addOnFailureListener { e -> updateStatus("Çeviri modeli indirilemedi. İnternet bağlantısını kontrol et."); LogStore.append(this, "HATA", "Çeviri modeli indirilemedi: ${e.localizedMessage}") }
+        tts = TextToSpeech(applicationContext) { status ->
+            if (status == TextToSpeech.SUCCESS) {
+                val res = tts?.setLanguage(Locale("tr", "TR"))
+                ttsReady = res != TextToSpeech.LANG_MISSING_DATA && res != TextToSpeech.LANG_NOT_SUPPORTED
+                if (!ttsReady) LogStore.append(this, "HATA", "TTS Türkçe dili kullanılamıyor (cihazda Türkçe ses verisi olmayabilir)")
+                else LogStore.append(this, "DURUM", "TTS hazır")
+            } else {
+                LogStore.append(this, "HATA", "TTS başlatılamadı")
+            }
+        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -304,10 +318,19 @@ class ScreenCaptureService : Service() {
             }
     }
 
+    private fun maybeSpeak(text: String) {
+        val enabled = getSharedPreferences("nexora_overlay", MODE_PRIVATE).getBoolean("tts_enabled", false)
+        if (!enabled || !ttsReady || text.isBlank() || text == lastSpoken) return
+        if (text.startsWith("Hazır") || text.startsWith("Çeviri") || text.startsWith("Ekran") || text.startsWith("Kaynak") || text.startsWith("OCR")) return
+        lastSpoken = text
+        try { tts?.speak(text, TextToSpeech.QUEUE_FLUSH, null, "nexora_sub") } catch (_: Exception) {}
+    }
+
     private fun updateStatus(text: String) {
         overlay?.show(text)
         val nm = getSystemService(NotificationManager::class.java)
         nm.notify(NOTIFICATION_ID, buildNotification(text))
+        maybeSpeak(text)
     }
 
     private fun imageToBitmap(image: Image): Bitmap? = try {
@@ -347,6 +370,8 @@ class ScreenCaptureService : Service() {
         overlay?.hide()
         recognizer.close()
         translator?.close()
+        try { tts?.stop(); tts?.shutdown() } catch (_: Exception) {}
+        tts = null; ttsReady = false
         worker?.quitSafely()
         super.onDestroy()
     }

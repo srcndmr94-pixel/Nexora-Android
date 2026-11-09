@@ -1,8 +1,6 @@
 package com.couchsubs.phone
 
 import android.Manifest
-import android.app.Activity
-import android.app.AlertDialog
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Color
@@ -14,7 +12,6 @@ import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
 import android.view.Gravity
-import android.view.View
 import android.view.ViewGroup
 import android.widget.Button
 import android.widget.HorizontalScrollView
@@ -23,6 +20,12 @@ import android.widget.ScrollView
 import android.widget.SeekBar
 import android.widget.TextView
 import android.widget.Toast
+import androidx.activity.ComponentActivity
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.appcompat.app.AlertDialog
+import androidx.core.app.ActivityCompat
+import androidx.core.content.ContextCompat
+import androidx.core.content.FileProvider
 import com.google.mlkit.common.model.DownloadConditions
 import com.google.mlkit.common.model.RemoteModelManager
 import com.google.mlkit.nl.translate.TranslateLanguage
@@ -31,81 +34,103 @@ import com.google.mlkit.nl.translate.Translation
 import com.google.mlkit.nl.translate.TranslatorOptions
 import java.io.File
 
-class MainActivity : Activity() {
-    private val captureRequest = 4102
-    private val notificationRequest = 4103
-
-    private lateinit var status: TextView
-    private lateinit var notifState: TextView
-    private lateinit var overlayState: TextView
+class MainActivity : ComponentActivity() {
+    private val notificationPermissionCode = 1001
+    private var overlayPermissionRequested = false
+    private lateinit var statusLabel: TextView
     private lateinit var modelState: TextView
     private lateinit var preview: TextView
+    private val modelManager by lazy { RemoteModelManager.getInstance() }
+    private val enTrModel by lazy { TranslateRemoteModel.Builder(TranslateLanguage.ENGLISH).build() }
+
+    private val projectionLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+        if (result.resultCode == RESULT_OK && result.data != null) {
+            LogStore.append(this, "DURUM", "Ekran yakalama izni verildi, servis başlatılıyor")
+            val svc = Intent(this, ScreenCaptureService::class.java).apply {
+                putExtra(ScreenCaptureService.EXTRA_RESULT_CODE, result.resultCode)
+                putExtra(ScreenCaptureService.EXTRA_DATA, result.data)
+            }
+            try {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(svc) else startService(svc)
+                toast("NEXORA başlatıldı")
+                statusLabel.text = "Çalışıyor: oyun/uygulama altyazıları algılanıp Türkçeye çevrilecek."
+            } catch (e: Exception) {
+                val msg = "Servis başlatılamadı: ${e.localizedMessage ?: "bilinmeyen hata"}"
+                LogStore.append(this, "HATA", msg)
+                statusLabel.text = msg
+                toast(msg)
+            }
+        } else {
+            LogStore.append(this, "HATA", "Ekran yakalama izni reddedildi/iptal edildi")
+            statusLabel.text = "Ekran yakalama izni verilmedi. Altyazı okuyabilmek için bu izin gerekli."
+            toast("Ekran yakalama izni verilmedi")
+        }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        if (::statusLabel.isInitialized) updatePermissionStatus()
+        if (::modelState.isInitialized) refreshModelState()
+        // Auto-request overlay permission once after returning from Settings (don't loop).
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && !Settings.canDrawOverlays(this) && !overlayPermissionRequested) {
+            overlayPermissionRequested = true
+            requestOverlayPermission()
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        window.statusBarColor = Color.parseColor("#0B1220")
-        window.navigationBarColor = Color.parseColor("#0B1220")
+        LogStore.append(this, "DURUM", "Uygulama açıldı")
 
-        val scroll = ScrollView(this).apply { setBackgroundColor(Color.parseColor("#0B1220")) }
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(20), dp(28), dp(20), dp(28))
+            setBackgroundColor(Color.parseColor("#0C0C0B"))
+            val pad = dp(20)
+            setPadding(pad, dp(28), pad, pad)
         }
 
         val title = TextView(this).apply {
             text = "NEXORA"
             setTextColor(Color.WHITE)
-            textSize = 30f
+            textSize = 34f
             typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD)
+            letterSpacing = 0.08f
         }
         val subtitle = TextView(this).apply {
-            text = "Oyun ve video altyazılarını ekranda Türkçeye çevirir (argo/küfür dahil, sansür eklemez)"
+            text = "Ekrandaki İngilizce altyazıları Türkçeye çevirir."
             setTextColor(Color.parseColor("#94A3B8"))
             textSize = 15f
-            setLineSpacing(3f, 1f)
             setPadding(0, dp(4), 0, dp(18))
         }
 
+        statusLabel = TextView(this).apply {
+            text = "Hazır"
+            setTextColor(Color.parseColor("#E2E8F0"))
+            textSize = 14f
+            setLineSpacing(4f, 1f)
+            background = rounded(Color.parseColor("#141413"), 14f)
+            setPadding(dp(14), dp(14), dp(14), dp(14))
+        }
+
         val permCard = card()
-        permCard.addView(sectionLabel("İzinler"))
-        notifState = stateRow("Bildirim izni")
-        overlayState = stateRow("Ekran üstü gösterme izni")
-        permCard.addView(notifState)
-        permCard.addView(overlayState)
-        permCard.addView(space(8))
+        permCard.addView(sectionLabel("Gerekli izinler"))
         permCard.addView(row(
-            secondaryButton("Bildirim izni") {
-                if (Build.VERSION.SDK_INT >= 33) {
-                    if (checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED) {
-                        toast("Bildirim izni zaten açık")
-                    } else {
-                        requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), notificationRequest)
-                    }
-                } else toast("Bu sürümde ayrıca bildirim izni gerekmez")
-                refreshStates()
-            },
-            secondaryButton("Pencere izni") {
-                startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName")))
-            }
+            secondaryButton("Bildirim izni") { requestNotificationPermission() },
+            secondaryButton("Üstte gösterme") { requestOverlayPermission() }
         ))
+        permCard.addView(space(10))
+        permCard.addView(statusLabel)
 
         val actionCard = card()
-        actionCard.addView(sectionLabel("Yakalama"))
-        status = TextView(this).apply {
-            text = "Hazır. İzinleri verdikten sonra yakalamayı başlat."
-            setTextColor(Color.parseColor("#E2E8F0"))
-            textSize = 15f
-            setLineSpacing(4f, 1f)
-            setPadding(0, 0, 0, dp(12))
-        }
-        actionCard.addView(status)
-        actionCard.addView(primaryButton("Ekran yakalamayı başlat") { startCapture() })
-        actionCard.addView(space(10))
-        actionCard.addView(dangerButton("Yakalamayı durdur") {
+        actionCard.addView(sectionLabel("Başlat"))
+        val start = primaryButton("NEXORA'yı Başlat") { startWithPermissions() }
+        val stop = secondaryButton("Durdur") {
             stopService(Intent(this, ScreenCaptureService::class.java))
-            status.text = "Yakalama durduruldu."
+            toast("NEXORA durduruldu")
+            statusLabel.text = "Durduruldu."
             LogStore.append(this, "DURUM", "Kullanıcı yakalamayı durdurdu")
-        })
+        }
+        actionCard.addView(row(start, stop))
 
         val styleCard = card()
         styleCard.addView(sectionLabel("Altyazı görünümü"))
@@ -178,6 +203,31 @@ class MainActivity : Activity() {
             })
         }
         styleCard.addView(offsetSeek)
+        styleCard.addView(space(8))
+        styleCard.addView(label("Seslendirme"))
+        val ttsState = TextView(this).apply {
+            setTextColor(Color.parseColor("#94A3B8")); textSize = 13f
+            text = if (prefs.getBoolean("tts_enabled", false)) "Açık — çevrilen altyazı sesli okunur." else "Kapalı"
+            setPadding(0, 0, 0, dp(6))
+        }
+        styleCard.addView(ttsState)
+        val ttsRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        ttsRow.addView(smallChoice("Açık") {
+            prefs.edit().putBoolean("tts_enabled", true).apply()
+            ttsState.text = "Açık — çevrilen altyazı sesli okunur."
+            toast("Seslendirme açık")
+        })
+        ttsRow.addView(smallChoice("Kapalı") {
+            prefs.edit().putBoolean("tts_enabled", false).apply()
+            ttsState.text = "Kapalı"
+            toast("Seslendirme kapalı")
+        })
+        styleCard.addView(ttsRow)
+        styleCard.addView(TextView(this).apply {
+            text = "Not: Seslendirme, telefonundaki Türkçe metin okuma (TTS) özelliğini kullanır. Cihazında Türkçe ses verisi yoksa ses çıkmayabilir."
+            setTextColor(Color.parseColor("#64748B")); textSize = 12f; setLineSpacing(2f, 1f)
+            setPadding(0, dp(6), 0, 0)
+        })
 
         val modelCard = card()
         modelCard.addView(sectionLabel("Dil paketi (İngilizce → Türkçe)"))
@@ -229,37 +279,67 @@ class MainActivity : Activity() {
         root.addView(space(14))
         root.addView(logCard)
 
-        scroll.addView(root)
+        val scroll = ScrollView(this).apply { addView(root) }
         setContentView(scroll)
-        refreshStates()
         refreshModelState()
-        LogStore.append(this, "DURUM", "Uygulama açıldı")
     }
 
-    override fun onResume() {
-        super.onResume()
-        refreshStates()
-        refreshModelState()
+    private fun updatePermissionStatus() {
+        val notif = if (Build.VERSION.SDK_INT < 33) "gerekli değil"
+            else if (hasPermission(Manifest.permission.POST_NOTIFICATIONS)) "verildi" else "eksik"
+        val overlay = if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M || Settings.canDrawOverlays(this)) "verildi" else "eksik"
+        statusLabel.text = "Bildirim izni: $notif · Üstte gösterme: $overlay"
     }
+
+    private fun startWithPermissions() {
+        if (Build.VERSION.SDK_INT >= 33 && !hasPermission(Manifest.permission.POST_NOTIFICATIONS)) {
+            requestNotificationPermission()
+            toast("Önce bildirim iznini ver, sonra tekrar Başlat'a dokun.")
+            return
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && !Settings.canDrawOverlays(this)) {
+            requestOverlayPermission()
+            toast("Önce 'Üstte gösterme' iznini aç, sonra tekrar Başlat'a dokun.")
+            return
+        }
+        requestCapture()
+    }
+
+    private fun requestNotificationPermission() {
+        if (Build.VERSION.SDK_INT >= 33 && !hasPermission(Manifest.permission.POST_NOTIFICATIONS)) {
+            ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.POST_NOTIFICATIONS), notificationPermissionCode)
+        } else toast("Bildirim izni zaten tamam")
+        updatePermissionStatus()
+    }
+
+    private fun requestOverlayPermission() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && !Settings.canDrawOverlays(this)) {
+            startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName")))
+        } else toast("Üstte gösterme izni zaten açık")
+    }
+
+    private fun requestCapture() {
+        val manager = getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
+        projectionLauncher.launch(manager.createScreenCaptureIntent())
+    }
+
+    private fun hasPermission(p: String) = ContextCompat.checkSelfPermission(this, p) == PackageManager.PERMISSION_GRANTED
 
     private fun refreshModelState() {
-        if (!::modelState.isInitialized) return
-        val model = TranslateRemoteModel.Builder(TranslateLanguage.ENGLISH).build()
-        RemoteModelManager.getInstance().isModelDownloaded(model)
+        modelState.text = "Dil paketi durumu kontrol ediliyor…"
+        modelManager.isModelDownloaded(enTrModel)
             .addOnSuccessListener { downloaded ->
-                modelState.text = if (downloaded) "● İngilizce dil paketi indirili — çevrimdışı çeviri hazır."
-                else "○ İngilizce dil paketi indirili değil — “Paketi indir” ile indir (internet gerekir)."
-                modelState.setTextColor(Color.parseColor(if (downloaded) "#86EFAC" else "#FCD34D"))
+                modelState.text = if (downloaded) "EN→TR dil paketi hazır. Çeviri bu paketle yapılır (sansür eklenmez; metin olduğu gibi çevrilir)."
+                else "EN→TR dil paketi yüklü değil. \"Paketi indir\" ile indir (ilk indirme internet ve biraz alan gerektirir)."
             }
-            .addOnFailureListener {
-                modelState.text = "Paket durumu okunamadı. İnternet varsa “Paketi indir” deneyebilirsin."
-                modelState.setTextColor(Color.parseColor("#FCA5A5"))
+            .addOnFailureListener { e ->
+                modelState.text = "Dil paketi durumu alınamadı: ${e.localizedMessage ?: "hata"}"
             }
     }
 
     private fun downloadModel() {
-        modelState.text = "İndiriliyor… (bu işlem birkaç dakika sürebilir)"
-        modelState.setTextColor(Color.parseColor("#E2E8F0"))
+        modelState.text = "EN→TR paketi indiriliyor… (internete ve biraz zamana ihtiyaç var)"
+        LogStore.append(this, "DURUM", "EN→TR dil paketi indirme başlatıldı")
         val options = TranslatorOptions.Builder()
             .setSourceLanguage(TranslateLanguage.ENGLISH)
             .setTargetLanguage(TranslateLanguage.TURKISH)
@@ -267,138 +347,91 @@ class MainActivity : Activity() {
         val client = Translation.getClient(options)
         client.downloadModelIfNeeded(DownloadConditions.Builder().build())
             .addOnSuccessListener {
+                modelState.text = "EN→TR dil paketi indirildi ve hazır."
+                LogStore.append(this, "DURUM", "EN→TR dil paketi indirildi")
                 toast("Dil paketi hazır")
-                LogStore.append(this, "DURUM", "Dil paketi indirildi/hazır")
-                refreshModelState()
                 client.close()
+                refreshModelState()
             }
             .addOnFailureListener { e ->
-                toast("İndirme başarısız: ${e.localizedMessage}")
-                LogStore.append(this, "HATA", "Dil paketi indirilemedi: ${e.localizedMessage}")
-                refreshModelState()
+                val msg = e.localizedMessage ?: "bilinmeyen hata"
+                modelState.text = "Paket indirilemedi: $msg. İnterneti kontrol edip tekrar dene."
+                LogStore.append(this, "HATA", "EN→TR dil paketi indirilemedi: $msg")
+                toast("İndirme başarısız")
                 client.close()
             }
     }
 
     private fun deleteModel() {
-        val model = TranslateRemoteModel.Builder(TranslateLanguage.ENGLISH).build()
-        RemoteModelManager.getInstance().deleteDownloadedModel(model)
+        modelManager.deleteDownloadedModel(enTrModel)
             .addOnSuccessListener {
+                LogStore.append(this, "DURUM", "EN→TR dil paketi silindi")
                 toast("Dil paketi silindi")
-                LogStore.append(this, "DURUM", "Dil paketi silindi")
                 refreshModelState()
             }
             .addOnFailureListener { e ->
-                toast("Silinemedi: ${e.localizedMessage}")
-                LogStore.append(this, "HATA", "Dil paketi silinemedi: ${e.localizedMessage}")
+                val msg = e.localizedMessage ?: "hata"
+                LogStore.append(this, "HATA", "EN→TR dil paketi silinemedi: $msg")
+                toast("Silinemedi: $msg")
                 refreshModelState()
             }
     }
 
-    private fun startCapture() {
-        if (Build.VERSION.SDK_INT >= 33 &&
-            checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
-            toast("Önce bildirim iznini ver (durum görmek için önerilir).")
-        }
-        if (!Settings.canDrawOverlays(this)) {
-            toast("Önce ekran üstü gösterme iznini ver.")
-            return
-        }
-        val manager = getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
-        startActivityForResult(manager.createScreenCaptureIntent(), captureRequest)
-    }
-
-    @Deprecated("Deprecated by Android, retained for broad device compatibility")
-    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
-        super.onActivityResult(requestCode, resultCode, data)
-        if (requestCode == captureRequest && resultCode == RESULT_OK && data != null) {
-            val service = Intent(this, ScreenCaptureService::class.java).apply {
-                putExtra(ScreenCaptureService.EXTRA_RESULT_CODE, resultCode)
-                putExtra(ScreenCaptureService.EXTRA_DATA, data)
-            }
-            androidx.core.content.ContextCompat.startForegroundService(this, service)
-            status.text = "Yakalama başladı. Videoya/oyuna geç.\n\nÇeviri ekranda altta bant olarak görünür; bildirimde de durum yazar."
-            LogStore.append(this, "DURUM", "Ekran yakalama başlatıldı")
-        } else if (requestCode == captureRequest) {
-            status.text = "Ekran yakalama izni verilmedi."
-            LogStore.append(this, "HATA", "Ekran yakalama izni verilmedi")
-        }
-    }
-
-    private fun refreshStates() {
-        val notifOk = Build.VERSION.SDK_INT < 33 || checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
-        val overlayOk = Settings.canDrawOverlays(this)
-        setState(notifState, "Bildirim izni", notifOk, if (Build.VERSION.SDK_INT < 33) "gerekli değil" else if (notifOk) "açık" else "kapalı")
-        setState(overlayState, "Ekran üstü gösterme izni", overlayOk, if (overlayOk) "açık" else "kapalı")
-    }
-
-    private fun setState(view: TextView, label: String, ok: Boolean, detail: String) {
-        val dot = if (ok) "● " else "○ "
-        view.text = "$dot$label: $detail"
-        view.setTextColor(if (ok) Color.parseColor("#86EFAC") else Color.parseColor("#FCA5A5"))
-    }
-
     private fun showLogs() {
-        val text = LogStore.read(this)
-        val tail = if (text.length > 12000) "…(son kısım)\n" + text.takeLast(12000) else text
+        val text = LogStore.read(this).ifBlank { "Henüz kayıt yok." }
         val tv = TextView(this).apply {
-            this.text = tail
+            this.text = text
             setTextColor(Color.parseColor("#E2E8F0"))
-            setBackgroundColor(Color.parseColor("#111827"))
             textSize = 12f
-            setPadding(dp(16), dp(16), dp(16), dp(16))
+            typeface = Typeface.MONOSPACE
+            setPadding(dp(16), dp(12), dp(16), dp(12))
             setTextIsSelectable(true)
         }
-        val sv = ScrollView(this).apply { addView(tv) }
-        AlertDialog.Builder(this)
-            .setTitle("Çalışma ve hata kaydı")
-            .setView(sv)
-            .setPositiveButton("Kapat", null)
-            .show()
+        val sc = ScrollView(this).apply { setBackgroundColor(Color.parseColor("#0C0C0B")); addView(tv) }
+        AlertDialog.Builder(this).setTitle("NEXORA kayıtları").setView(sc)
+            .setPositiveButton("Kapat", null).show()
     }
 
     private fun shareLogs() {
-        val body = LogStore.read(this)
-        val send = Intent(Intent.ACTION_SEND).apply {
-            type = "text/plain"
-            putExtra(Intent.EXTRA_SUBJECT, "NEXORA çalışma kaydı")
-            putExtra(Intent.EXTRA_TEXT, body.takeLast(100000))
+        val file = LogStore.file(this)
+        if (!file.exists() || file.length() == 0L) {
+            toast("Paylaşılacak kayıt yok")
+            return
         }
-        startActivity(Intent.createChooser(send, "Kayıtları paylaş"))
+        // Copy to cache for FileProvider.
+        val out = File(cacheDir, "nexora_log.txt")
+        file.copyTo(out, overwrite = true)
+        val uri = FileProvider.getUriForFile(this, "$packageName.fileprovider", out)
+        val intent = Intent(Intent.ACTION_SEND).apply {
+            type = "text/plain"
+            putExtra(Intent.EXTRA_STREAM, uri)
+            putExtra(Intent.EXTRA_SUBJECT, "NEXORA çalışma/hata kaydı")
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        startActivity(Intent.createChooser(intent, "Kayıtları paylaş"))
     }
 
-    private fun card(): LinearLayout = LinearLayout(this).apply {
+    private fun dp(v: Int): Int = (v * resources.displayMetrics.density).toInt()
+    private fun space(h: Int) = android.widget.Space(this).apply { layoutParams = LinearLayout.LayoutParams(1, dp(h)) }
+    private fun toast(msg: String) = Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
+
+    private fun card() = LinearLayout(this).apply {
         orientation = LinearLayout.VERTICAL
-        setPadding(dp(16), dp(16), dp(16), dp(16))
-        background = GradientDrawable().apply {
-            setColor(Color.parseColor("#111827"))
-            cornerRadius = dp(18).toFloat()
-            setStroke(dp(1), Color.parseColor("#1F2937"))
-        }
-        layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+        background = rounded(Color.parseColor("#141413"), 18f)
+        val p = dp(16); setPadding(p, p, p, p)
     }
 
     private fun sectionLabel(t: String) = TextView(this).apply {
         text = t
-        setTextColor(Color.parseColor("#67E8F9"))
+        setTextColor(Color.parseColor("#CBD5E1"))
         textSize = 13f
         typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD)
-        letterSpacing = 0.05f
-        setPadding(0, 0, 0, dp(8))
+        letterSpacing = 0.06f
+        setPadding(0, 0, 0, dp(10))
     }
 
     private fun label(t: String) = TextView(this).apply {
-        text = t
-        setTextColor(Color.parseColor("#CBD5E1"))
-        textSize = 13f
-        setPadding(0, dp(2), 0, dp(4))
-    }
-
-    private fun stateRow(label: String) = TextView(this).apply {
-        text = "○ $label"
-        setTextColor(Color.parseColor("#CBD5E1"))
-        textSize = 14f
-        setPadding(0, dp(2), 0, dp(2))
+        text = t; setTextColor(Color.parseColor("#94A3B8")); textSize = 13f; setPadding(0, dp(2), 0, dp(4))
     }
 
     private fun primaryButton(label: String, onClick: () -> Unit) = Button(this).apply {
@@ -406,13 +439,9 @@ class MainActivity : Activity() {
         isAllCaps = false
         textSize = 16f
         typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD)
-        setTextColor(Color.parseColor("#082F49"))
-        background = GradientDrawable().apply {
-            setColor(Color.parseColor("#22D3EE"))
-            cornerRadius = dp(14).toFloat()
-        }
-        setPadding(dp(16), dp(14), dp(16), dp(14))
-        layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+        setTextColor(Color.WHITE)
+        background = rounded(Color.parseColor("#CD6B47"), 14f)
+        setPadding(dp(14), dp(12), dp(14), dp(12))
         setOnClickListener { onClick() }
     }
 
@@ -420,14 +449,9 @@ class MainActivity : Activity() {
         text = label
         isAllCaps = false
         textSize = 14f
-        setTextColor(Color.WHITE)
-        background = GradientDrawable().apply {
-            setColor(Color.parseColor("#1F2937"))
-            cornerRadius = dp(12).toFloat()
-            setStroke(dp(1), Color.parseColor("#334155"))
-        }
-        setPadding(dp(12), dp(12), dp(12), dp(12))
-        layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { marginEnd = dp(6) }
+        setTextColor(Color.parseColor("#E2E8F0"))
+        background = rounded(Color.parseColor("#1F1F1D"), 14f).also { it.setStroke(dp(1), Color.parseColor("#2E2E2B")) }
+        setPadding(dp(14), dp(12), dp(14), dp(12))
         setOnClickListener { onClick() }
     }
 
@@ -435,40 +459,22 @@ class MainActivity : Activity() {
         text = label
         isAllCaps = false
         textSize = 13f
-        setTextColor(Color.WHITE)
-        background = GradientDrawable().apply {
-            setColor(Color.parseColor("#1F2937"))
-            cornerRadius = dp(10).toFloat()
-            setStroke(dp(1), Color.parseColor("#334155"))
-        }
+        setTextColor(Color.parseColor("#E2E8F0"))
+        background = rounded(Color.parseColor("#1F1F1D"), 12f).also { it.setStroke(dp(1), Color.parseColor("#2E2E2B")) }
         setPadding(dp(12), dp(8), dp(12), dp(8))
-        layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { marginEnd = dp(6) }
+        layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { marginEnd = dp(8) }
         setOnClickListener { onClick() }
     }
 
-    private fun dangerButton(label: String, onClick: () -> Unit) = Button(this).apply {
-        text = label
-        isAllCaps = false
-        textSize = 15f
-        setTextColor(Color.parseColor("#FEE2E2"))
-        background = GradientDrawable().apply {
-            setColor(Color.parseColor("#3F1D1D"))
-            cornerRadius = dp(14).toFloat()
-            setStroke(dp(1), Color.parseColor("#7F1D1D"))
-        }
-        setPadding(dp(16), dp(12), dp(16), dp(12))
-        layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
-        setOnClickListener { onClick() }
-    }
-
-    private fun row(a: View, b: View) = LinearLayout(this).apply {
+    private fun row(left: Button, right: Button) = LinearLayout(this).apply {
         orientation = LinearLayout.HORIZONTAL
         weightSum = 2f
-        addView(a)
-        addView(b.apply { (layoutParams as? LinearLayout.LayoutParams)?.marginEnd = 0 })
+        addView(left, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { marginEnd = dp(6) })
+        addView(right, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { marginStart = dp(6) })
     }
 
-    private fun space(h: Int) = View(this).apply { layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(h)) }
-    private fun dp(v: Int): Int = (v * resources.displayMetrics.density).toInt()
-    private fun toast(msg: String) = Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
+    private fun rounded(color: Int, radiusDp: Float) = GradientDrawable().apply {
+        setColor(color)
+        cornerRadius = dp(radiusDp.toInt()).toFloat()
+    }
 }
