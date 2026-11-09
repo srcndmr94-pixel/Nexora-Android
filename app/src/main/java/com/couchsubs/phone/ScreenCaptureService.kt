@@ -58,13 +58,16 @@ class ScreenCaptureService : Service() {
     private var screenWidth = 0
     private var screenHeight = 0
 
-    // Game UI/button prompts are not dialogue subtitles.
+    // Player/UI chrome that is not dialogue.
     private val uiWords = setOf(
         "exit", "shop", "map", "inventory", "settings", "options", "menu", "save", "load",
         "quit", "resume", "retry", "respawn", "waypoint", "objective", "quest", "craft",
         "upgrade", "purchase", "sell", "buy", "confirm", "cancel", "apply", "reset",
         "swim", "dive", "lunge", "jump", "dodge", "sprint", "crouch", "interact",
-        "attack", "block", "parry", "aim", "reload", "climb", "vault", "grapple"
+        "attack", "block", "parry", "aim", "reload", "climb", "vault", "grapple",
+        "subscribe", "share", "like", "dislike", "comments", "comment", "next", "previous",
+        "play", "pause", "replay", "skip", "quality", "autoplay", "captions", "subtitle",
+        "subtitles", "fullscreen", "live", "views", "ago"
     )
 
     override fun onCreate() {
@@ -81,7 +84,7 @@ class ScreenCaptureService : Service() {
         // Model download is asynchronous. Never attempt translation before it is ready.
         updateStatus("Çeviri modeli hazırlanıyor (ilk seferde indirme gerekir)…")
         translator?.downloadModelIfNeeded(DownloadConditions.Builder().build())
-            ?.addOnSuccessListener { translatorReady = true; updateStatus("Hazır — altyazı bekleniyor (ekranın altındaki İngilizce yazı aranıyor)") }
+            ?.addOnSuccessListener { translatorReady = true; updateStatus("Hazır — altyazı bekleniyor") }
             ?.addOnFailureListener { updateStatus("Çeviri modeli indirilemedi. İnternet bağlantısını kontrol et.") }
     }
 
@@ -150,17 +153,18 @@ class ScreenCaptureService : Service() {
     }
 
     private fun processFrame(bitmap: Bitmap) {
-        // Subtitle text is usually in the lower third; ignore the top HUD and notification area.
-        val cropTop = (bitmap.height * 0.58f).toInt()
+        // Scan the lower half to catch subtitles in different positions.
+        val cropTop = (bitmap.height * 0.45f).toInt()
         val crop = Bitmap.createBitmap(bitmap, 0, cropTop, bitmap.width, bitmap.height - cropTop)
         recognizer.process(InputImage.fromBitmap(crop, 0))
             .addOnSuccessListener { result ->
                 val lines = result.textBlocks.flatMap { block -> block.lines }.map { it.text.trim() }
-                val text = lines.joinToString(" ").replace(Regex("\\s+"), " ").trim()
-                if (isLikelySubtitle(text)) handleSubtitle(text)
-                else if (text.isBlank()) lastSource = ""
+                val joined = lines.joinToString(" ").replace(Regex("\\s+"), " ").trim()
+                val text = pickBestSubtitleCandidate(lines, joined)
+                if (text != null) handleSubtitle(text)
+                else if (joined.isBlank()) lastSource = ""
             }
-            .addOnFailureListener { updateStatus("Altyazı okunamadı. Ekran yakalama iznini kontrol et.") }
+            .addOnFailureListener { /* keep last status; transient frame errors are common */ }
             .addOnCompleteListener {
                 crop.recycle()
                 bitmap.recycle()
@@ -168,19 +172,39 @@ class ScreenCaptureService : Service() {
             }
     }
 
+    private fun pickBestSubtitleCandidate(lines: List<String>, joined: String): String? {
+        if (isLikelySubtitle(joined)) return joined
+        // Try individual/combined lines in case joined text includes player chrome.
+        val cleaned = lines.map { it.replace(Regex("\\s+"), " ").trim() }
+            .filter { it.isNotBlank() }
+        for (line in cleaned.sortedByDescending { it.length }) {
+            if (isLikelySubtitle(line)) return line
+        }
+        // Try adjacent line pairs (subtitles sometimes split across OCR lines).
+        for (i in 0 until (cleaned.size - 1)) {
+            val pair = (cleaned[i] + " " + cleaned[i + 1]).trim()
+            if (isLikelySubtitle(pair)) return pair
+        }
+        return null
+    }
+
     private fun isLikelySubtitle(raw: String): Boolean {
         val text = raw.trim()
-        if (text.length < 3 || text.length > 260) return false
+        if (text.length < 4 || text.length > 280) return false
+        // Ignore timecodes/progress like 0:12, 1:23:45, 12:34 / 56:78.
+        if (text.matches(Regex("^[\\d:\\s/.-]+$"))) return false
         val normalized = Normalizer.normalize(text, Normalizer.Form.NFKC).lowercase(Locale.ENGLISH)
         val words = normalized.split(Regex("[^a-z']+")).filter { it.isNotBlank() }
-        if (words.isEmpty()) return false
+        if (words.size < 2) return false
         // Exclude button prompts such as "X Exit See Shop" and "O Dive / Swim Up".
         val uiCount = words.count { it in uiWords }
         val buttonPrefix = Regex("^(?:[xyoab]|l[123]|r[123]|lt|rt)\\s+", RegexOption.IGNORE_CASE).containsMatchIn(text)
         if (buttonPrefix && uiCount > 0) return false
-        if (words.size <= 5 && uiCount >= 2) return false
+        if (words.size <= 6 && uiCount >= 2) return false
         if (normalized.matches(Regex("^[xyob a]+$"))) return false
-        return words.any { it.length >= 3 }
+        val letters = text.count { it.isLetter() }
+        if (letters < 6) return false
+        return words.count { it.length >= 2 } >= 2
     }
 
     private fun handleSubtitle(text: String) {
