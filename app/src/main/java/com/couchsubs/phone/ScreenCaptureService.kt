@@ -79,13 +79,14 @@ class ScreenCaptureService : Service() {
             .build()
         translator = Translation.getClient(options)
         // Model download is asynchronous. Never attempt translation before it is ready.
+        updateStatus("Çeviri modeli hazırlanıyor (ilk seferde indirme gerekir)…")
         translator?.downloadModelIfNeeded(DownloadConditions.Builder().build())
-            ?.addOnSuccessListener { translatorReady = true; overlay?.show("NEXORA hazır — altyazı bekleniyor") }
-            ?.addOnFailureListener { overlay?.show("Çeviri modeli indirilemedi. İnternet bağlantısını kontrol et.") }
+            ?.addOnSuccessListener { translatorReady = true; updateStatus("Hazır — altyazı bekleniyor (ekranın altındaki İngilizce yazı aranıyor)") }
+            ?.addOnFailureListener { updateStatus("Çeviri modeli indirilemedi. İnternet bağlantısını kontrol et.") }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        val notification = buildNotification()
+        val notification = buildNotification("Başlatılıyor…")
         if (Build.VERSION.SDK_INT >= 29) {
             startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION)
         } else startForeground(NOTIFICATION_ID, notification)
@@ -93,7 +94,7 @@ class ScreenCaptureService : Service() {
         val resultCode = intent?.getIntExtra(EXTRA_RESULT_CODE, 0) ?: 0
         val data = projectionDataFrom(intent)
         if (data == null || resultCode == 0) {
-            overlay?.show("Ekran yakalama izni alınamadı. NEXORA'yı yeniden başlat.")
+            updateStatus("Ekran yakalama izni alınamadı. NEXORA'yı yeniden başlat.")
             stopSelf()
             return START_NOT_STICKY
         }
@@ -133,16 +134,17 @@ class ScreenCaptureService : Service() {
                 } ?: run { image.close(); processing.set(false) }
             }, workerHandler)
             projection?.registerCallback(object : MediaProjection.Callback() {
-                override fun onStop() { stopSelf() }
+                override fun onStop() { updateStatus("Ekran yakalama durduruldu."); stopSelf() }
             }, workerHandler)
             virtualDisplay = projection?.createVirtualDisplay(
                 "NEXORA-Capture", screenWidth, screenHeight, metrics.densityDpi,
                 DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
                 reader?.surface, null, workerHandler
             )
-            overlay?.show("NEXORA hazır — oyun altyazısı bekleniyor")
+            if (translatorReady) updateStatus("Hazır — altyazı bekleniyor")
+            else updateStatus("Yakalama açık — çeviri modeli hazırlanıyor…")
         }.onFailure {
-            overlay?.show("Ekran yakalama başlatılamadı: ${it.localizedMessage ?: "bilinmeyen hata"}")
+            updateStatus("Ekran yakalama başlatılamadı: ${it.localizedMessage ?: "bilinmeyen hata"}")
             stopSelf()
         }
     }
@@ -158,7 +160,7 @@ class ScreenCaptureService : Service() {
                 if (isLikelySubtitle(text)) handleSubtitle(text)
                 else if (text.isBlank()) lastSource = ""
             }
-            .addOnFailureListener { overlay?.show("Altyazı okunamadı. Ekran yakalama iznini kontrol et.") }
+            .addOnFailureListener { updateStatus("Altyazı okunamadı. Ekran yakalama iznini kontrol et.") }
             .addOnCompleteListener {
                 crop.recycle()
                 bitmap.recycle()
@@ -187,7 +189,7 @@ class ScreenCaptureService : Service() {
         lastSource = normalized
         if (!translatorReady) {
             pendingSource = text
-            overlay?.show("Çeviri modeli hazırlanıyor…")
+            updateStatus("Çeviri modeli hazırlanıyor…")
             return
         }
         if (translating) {
@@ -198,22 +200,28 @@ class ScreenCaptureService : Service() {
     }
 
     private fun translate(source: String) {
-        val activeTranslator = translator ?: run { overlay?.show(source); return }
+        val activeTranslator = translator ?: run { updateStatus(source); return }
         translating = true
         activeTranslator.translate(source)
             .addOnSuccessListener { translated ->
                 if (translated.isNotBlank()) {
                     lastShownSource = Normalizer.normalize(source, Normalizer.Form.NFKC).lowercase(Locale.ROOT)
-                    overlay?.show(translated.trim())
-                } else overlay?.show(source)
+                    updateStatus(translated.trim())
+                } else updateStatus(source)
             }
-            .addOnFailureListener { overlay?.show("Çeviri başarısız — kaynak: $source") }
+            .addOnFailureListener { updateStatus("Çeviri başarısız — kaynak: $source") }
             .addOnCompleteListener {
                 translating = false
                 val next = pendingSource
                 pendingSource = null
                 if (!next.isNullOrBlank() && next != source) translate(next)
             }
+    }
+
+    private fun updateStatus(text: String) {
+        overlay?.show(text)
+        val nm = getSystemService(NotificationManager::class.java)
+        nm.notify(NOTIFICATION_ID, buildNotification(text))
     }
 
     private fun imageToBitmap(image: Image): Bitmap? = try {
@@ -236,10 +244,11 @@ class ScreenCaptureService : Service() {
         }
     }
 
-    private fun buildNotification(): Notification = NotificationCompat.Builder(this, CHANNEL_ID)
+    private fun buildNotification(text: String = "Oyun altyazıları algılanıyor ve çevriliyor"): Notification = NotificationCompat.Builder(this, CHANNEL_ID)
         .setSmallIcon(android.R.drawable.ic_menu_view)
         .setContentTitle("NEXORA çalışıyor")
-        .setContentText("Oyun altyazıları algılanıyor ve çevriliyor")
+        .setContentText(text)
+        .setStyle(NotificationCompat.BigTextStyle().bigText(text))
         .setOngoing(true)
         .build()
 
