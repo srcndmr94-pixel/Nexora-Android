@@ -5,22 +5,40 @@ on:
     branches: [ "main", "master" ]
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v4
-    - uses: actions/setup-java@v4
-      with:
-        java-version: '17'
-        distribution: 'temurin'
-    - uses: gradle/actions/setup-gradle@v3
-      with:
-        gradle-version: '8.9'
-    - run: gradle assembleDebug --no-daemon --stacktrace
-    - uses: actions/upload-artifact@v4
-      with:
-        name: nexora-debug-apk
-        path: app/build/outputs/apk/debug/app-debug.apk
-        if-no-files-found: error
-        retention-days: 30
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+      - uses: gradle/actions/setup-gradle@v3
+        with:
+          gradle-version: '8.9'
+      - run: gradle assembleDebug --no-daemon --stacktrace
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nexora-debug-apk
+          path: app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          retention-days: 30
+      - name: Publish APK to GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create debug-latest app/build/outputs/apk/debug/app-debug.apk \
+            --title "NEXORA debug-latest" \
+            --notes "Otomatik oluşturulan debug APK (her derlemede güncellenir)." \
+            --target "${{ github.sha }}" \
+            --prerelease \
+            || gh release upload debug-latest app/build/outputs/apk/debug/app-debug.apk --clobber
+          gh release edit debug-latest \
+            --title "NEXORA debug-latest" \
+            --notes "Otomatik oluşturulan debug APK (her derlemede güncellenir)." \
+            --target "${{ github.sha }}" \
+            --prerelease
