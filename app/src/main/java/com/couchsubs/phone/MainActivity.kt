@@ -393,40 +393,32 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun shareLogs() {
-        val file = LogStore.file(this)
-        if (!file.exists() || file.length() == 0L) {
-            toast("Paylaşılacak kayıt yok")
-            return
-        }
-        // Copy to cache for FileProvider.
-        val out = File(cacheDir, "nexora_log.txt")
-        file.copyTo(out, overwrite = true)
-        val uri = FileProvider.getUriForFile(this, "$packageName.fileprovider", out)
-        val intent = Intent(Intent.ACTION_SEND).apply {
+        val body = LogStore.read(this)
+        val send = Intent(Intent.ACTION_SEND).apply {
             type = "text/plain"
-            putExtra(Intent.EXTRA_STREAM, uri)
-            putExtra(Intent.EXTRA_SUBJECT, "NEXORA çalışma/hata kaydı")
-            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            putExtra(Intent.EXTRA_SUBJECT, "NEXORA çalışma kaydı")
+            putExtra(Intent.EXTRA_TEXT, body.takeLast(100000))
         }
-        startActivity(Intent.createChooser(intent, "Kayıtları paylaş"))
+        startActivity(Intent.createChooser(send, "Kayıtları paylaş"))
     }
 
-    private fun dp(v: Int): Int = (v * resources.displayMetrics.density).toInt()
-    private fun space(h: Int) = android.widget.Space(this).apply { layoutParams = LinearLayout.LayoutParams(1, dp(h)) }
-    private fun toast(msg: String) = Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
-
-    private fun card() = LinearLayout(this).apply {
+    private fun card(): LinearLayout = LinearLayout(this).apply {
         orientation = LinearLayout.VERTICAL
-        background = rounded(Color.parseColor("#141413"), 18f)
-        val p = dp(16); setPadding(p, p, p, p)
+        setPadding(dp(16), dp(16), dp(16), dp(16))
+        background = GradientDrawable().apply {
+            setColor(Color.parseColor("#111827"))
+            cornerRadius = dp(18).toFloat()
+            setStroke(dp(1), Color.parseColor("#1F2937"))
+        }
+        layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
     }
 
     private fun sectionLabel(t: String) = TextView(this).apply {
         text = t
-        setTextColor(Color.parseColor("#CBD5E1"))
+        setTextColor(Color.parseColor("#67E8F9"))
         textSize = 13f
         typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD)
-        letterSpacing = 0.06f
+        letterSpacing = 0.04f
         setPadding(0, 0, 0, dp(10))
     }
 
@@ -477,4 +469,10 @@ class MainActivity : ComponentActivity() {
         setColor(color)
         cornerRadius = dp(radiusDp.toInt()).toFloat()
     }
+
+    private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
+    private fun space(h: Int): android.widget.Space = android.widget.Space(this).apply {
+        layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(h))
+    }
+    private fun toast(msg: String) = Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
 }
