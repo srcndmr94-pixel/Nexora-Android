@@ -17,6 +17,7 @@ import android.view.Gravity
 import android.view.ViewGroup
 import android.widget.Button
 import android.widget.HorizontalScrollView
+import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.SeekBar
@@ -95,15 +96,31 @@ class MainActivity : ComponentActivity() {
         val title = TextView(this).apply {
             text = "NEXORA"
             setTextColor(Color.WHITE)
-            textSize = 34f
+            textSize = 30f
             typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD)
             letterSpacing = 0.08f
         }
         val subtitle = TextView(this).apply {
             text = "Ekrandaki İngilizce altyazıları Türkçeye çevirir."
             setTextColor(Color.parseColor("#94A3B8"))
-            textSize = 15f
-            setPadding(0, dp(4), 0, dp(18))
+            textSize = 14f
+            setPadding(0, dp(4), 0, 0)
+        }
+        val logo = ImageView(this).apply {
+            setImageResource(R.drawable.ic_nexora_mark)
+            contentDescription = "NEXORA logosu"
+        }
+        val headerText = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            addView(title)
+            addView(subtitle)
+        }
+        val header = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(0, 0, 0, dp(18))
+            addView(logo, LinearLayout.LayoutParams(dp(52), dp(52)).apply { marginEnd = dp(14) })
+            addView(headerText, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
         }
 
         statusLabel = TextView(this).apply {
@@ -336,8 +353,7 @@ class MainActivity : ComponentActivity() {
             toast("Kayıtlar temizlendi")
         }.apply { layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT) })
 
-        root.addView(title)
-        root.addView(subtitle)
+        root.addView(header)
         root.addView(permCard)
         root.addView(space(14))
         root.addView(actionCard)
