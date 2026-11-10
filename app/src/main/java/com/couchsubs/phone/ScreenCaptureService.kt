@@ -5,6 +5,7 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.Service
 import android.content.Intent
+import android.content.pm.ServiceInfo
 import android.graphics.Bitmap
 import android.graphics.PixelFormat
 import android.hardware.display.DisplayManager
@@ -183,7 +184,15 @@ class ScreenCaptureService : Service(), TextToSpeech.OnInitListener {
             stopSelf()
             return START_NOT_STICKY
         }
-        startForeground(NOTIFICATION_ID, buildNotification("$APP_NAME hazırlanıyor…"))
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            startForeground(
+                NOTIFICATION_ID,
+                buildNotification("$APP_NAME hazırlanıyor…"),
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
+            )
+        } else {
+            startForeground(NOTIFICATION_ID, buildNotification("$APP_NAME hazırlanıyor…"))
+        }
         running = true
         try {
             ensureTranslator()
@@ -206,7 +215,13 @@ class ScreenCaptureService : Service(), TextToSpeech.OnInitListener {
     private fun createVirtualDisplay() {
         val wm = getSystemService(WINDOW_SERVICE) as WindowManager
         val metrics = if (Build.VERSION.SDK_INT >= 30) {
-            wm.currentWindowMetrics.bounds.let { DisplayMetrics().apply { widthPixels = it.width(); heightPixels = it.height() } }
+            wm.currentWindowMetrics.bounds.let {
+                DisplayMetrics().apply {
+                    widthPixels = it.width()
+                    heightPixels = it.height()
+                    densityDpi = resources.displayMetrics.densityDpi
+                }
+            }
         } else {
             DisplayMetrics().also { @Suppress("DEPRECATION") wm.defaultDisplay.getRealMetrics(it) }
         }
