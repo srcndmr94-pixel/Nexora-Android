@@ -45,6 +45,9 @@ class ScreenCaptureService : Service() {
         private const val CHANNEL_ID = "nexora_capture"
         private const val NOTIFICATION_ID = 71
         private const val PREFS = "nexora_overlay"
+
+        @Volatile
+        var running = false
     }
 
     private var projection: MediaProjection? = null
@@ -71,7 +74,7 @@ class ScreenCaptureService : Service() {
     @Volatile private var lastSourceAt = 0L
     @Volatile private var lastSubtitleAt = 0L
     @Volatile private var showingSubtitle = false
-    private val CLEAR_MS = 2800L
+    @Volatile private var lastFrameAt = 0L
 
     // Player/UI chrome that is not dialogue.
     private val uiWords = setOf(
@@ -99,6 +102,7 @@ class ScreenCaptureService : Service() {
 
     override fun onCreate() {
         super.onCreate()
+        running = true
         createNotificationChannel()
         overlay = SubtitleOverlay(this)
         worker = HandlerThread("NEXORA-OCR").also { it.start() }
@@ -195,10 +199,18 @@ class ScreenCaptureService : Service() {
     }
 
     private fun processFrame(bitmap: Bitmap) {
+        // Respect the OCR frequency chosen in settings; drop frames that arrive too early.
+        val frameNow = System.currentTimeMillis()
+        if (frameNow - lastFrameAt < prefInt("ocr_interval_ms", 250).coerceIn(80, 1200)) {
+            bitmap.recycle()
+            processing.set(false)
+            return
+        }
+        lastFrameAt = frameNow
         // Scan the lower half to catch subtitles in different positions; scale down for speed.
         val cropTop = (bitmap.height * 0.45f).toInt()
         val rawCrop = Bitmap.createBitmap(bitmap, 0, cropTop, bitmap.width, bitmap.height - cropTop)
-        val targetW = 960
+        val targetW = if (prefBool("ocr_hires", true)) 960 else 640
         val crop = if (rawCrop.width > targetW) {
             val targetH = (rawCrop.height * (targetW.toFloat() / rawCrop.width)).toInt().coerceAtLeast(1)
             Bitmap.createScaledBitmap(rawCrop, targetW, targetH, true).also { if (it !== rawCrop) rawCrop.recycle() }
@@ -214,14 +226,14 @@ class ScreenCaptureService : Service() {
                     val now = System.currentTimeMillis()
                     if (joined.isNotBlank()) {
                         val sample = joined.take(120)
-                        if (now - lastRejectLogAt > 1500L && sample.length > 3) {
+                        if (prefBool("debug_log", false) && now - lastRejectLogAt > 1500L && sample.length > 3) {
                             lastRejectLogAt = now
                             LogStore.append(this, "OCR_ATLANDI", sample)
                         }
                     }
                     lastSource = ""
                     // Clear stuck subtitle a short time after speech/subtitle disappears.
-                    if (showingSubtitle && now - lastSubtitleAt > CLEAR_MS) {
+                    if (showingSubtitle && now - lastSubtitleAt > prefInt("clear_ms", 2800).toLong()) {
                         showingSubtitle = false
                         overlay?.show("")
                     }
@@ -274,6 +286,7 @@ class ScreenCaptureService : Service() {
     }
 
     private fun looksLikeHudPrompt(text: String): Boolean {
+        if (!prefBool("hud_filter", true)) return false
         val lower = Normalizer.normalize(text, Normalizer.Form.NFKC).lowercase(Locale.ROOT)
         if (ratingChromeRegex.containsMatchIn(lower)) return true
         val tokens = lower.split(Regex("[^a-z0-9]+")).filter { it.isNotBlank() }
@@ -369,6 +382,7 @@ class ScreenCaptureService : Service() {
     }
 
     private fun mergeContextIfUseful(text: String): String {
+        if (!prefBool("merge_repeat", true)) return text
         val now = System.currentTimeMillis()
         val prev = lastRawSource
         val dt = now - lastSourceAt
@@ -381,7 +395,7 @@ class ScreenCaptureService : Service() {
     }
 
     private fun handleSubtitle(text: String) {
-        val merged = mergeContextIfUseful(text)
+        val merged = mergeContextIfUseful(text).take(prefInt("max_chars", 250).coerceIn(80, 600))
         val normalized = dedupKey(merged)
         if (isNearDuplicate(normalized, lastSource) || isNearDuplicate(normalized, lastShownSource)) return
         lastSource = normalized
@@ -550,6 +564,7 @@ class ScreenCaptureService : Service() {
         .build()
 
     override fun onDestroy() {
+        running = false
         LogStore.append(this, "DURUM", "Servis durduruluyor")
         virtualDisplay?.release()
         reader?.setOnImageAvailableListener(null, null)
@@ -563,6 +578,12 @@ class ScreenCaptureService : Service() {
         worker?.quitSafely()
         super.onDestroy()
     }
+
+    private fun prefBool(key: String, def: Boolean): Boolean =
+        getSharedPreferences(PREFS, MODE_PRIVATE).getBoolean(key, def)
+
+    private fun prefInt(key: String, def: Int): Int =
+        getSharedPreferences(PREFS, MODE_PRIVATE).getInt(key, def)
 
     override fun onBind(intent: Intent?): IBinder? = null
 }
