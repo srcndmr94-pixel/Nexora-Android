@@ -18,7 +18,7 @@ class SubtitleOverlay(private val context: Context) {
     private val mainHandler = Handler(Looper.getMainLooper())
     private val windowManager = context.getSystemService(Context.WINDOW_SERVICE) as WindowManager
     private val view = TextView(context).apply {
-        text = "NEXORA hazırlanıyor…"
+        text = "GameLingoPro hazırlanıyor…"
         setTextColor(Color.WHITE)
         textSize = 22f
         typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD)
