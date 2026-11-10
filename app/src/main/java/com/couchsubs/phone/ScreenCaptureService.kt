@@ -237,13 +237,18 @@ class ScreenCaptureService : Service() {
 
     private val buttonPromptRegex = Regex(
         """(?ix)
-        \b(?:L[123]|R[123]|LB|RB|LT|RT|L\s*STICK|R\s*STICK)\b
-        | \b(?:STUDY|PRAISE|SCOLD|PET|KNOCK|OPEN|TAKE|TALK|SEARCH|HOLD|PRESS|PICK\s*UP|DROP\s*OFF|CALL|PHONE|PALM|RETURN|MOUNT|DISMOUNT)\b \s* (?:\(?\s*(?:L[123]|R[123]|[XYOAB△□○×])\s*\)? | \b[A-Z]{1,3}\d?\b)?
+        \b(?:L[123]|R[123]|LB|RB|LT|RT|LS|RS|L\s*STICK|R\s*STICK)\b
+        | \b(?:STUDY|PRAISE|SCOLD|PET|KNOCK|OPEN|TAKE|TALK|SEARCH|HOLD|PRESS|PICK\s*UP|DROP\s*OFF|CALL|PHONE|PALM|RETURN|MOUNT|DISMOUNT|SNEAK|EXIT|ENTER)\b \s* (?:\(?\s*(?:L[123]|R[123]|[XYOAB△□○×]|R|L)\s*\)? | \b[A-Z]{1,3}\d?\b)?
         | \bDOG\s*\(?\s*L?\d*\s*\)?
         | (?:^|[ \t])\(?(?:[XYOAB△□○×]|R|L)\)?(?:[ \t]|$)
         """
     )
     private val ratingChromeRegex = Regex("(?i)\\b(mature\\s*17\\+|may\\s*contain\\s*content|inappropriate\\s*for\\s*children|esrb\\.org|likely\\s*mature)\\b")
+    private val hudPromptTokens = setOf(
+        "l1","l2","l3","r1","r2","r3","lb","rb","lt","rt","ls","rs","x","y","a","b","o","r","l",
+        "study","praise","scold","pet","knock","open","take","talk","search","hold","press",
+        "pickup","drop","call","phone","palm","return","dog","mount","dismount","sneak","enter","exit"
+    )
 
     private fun cleanupCandidate(raw: String): String {
         var t = raw.replace(Regex("\\s+"), " ").trim()
@@ -251,14 +256,15 @@ class ScreenCaptureService : Service() {
         t = t.replace(Regex("^(?:[A-Z0-9]{3,}(?:\\s+[A-Z0-9]{2,}){0,3}\\s+)(?=[A-Za-z'\"-])"), "").trim()
         t = t.replace(Regex("^(?:[mM]\\s+)?[A-Z]{2,}[A-Z0-9]*\\s+R\\d+[A-Z]*\\s+[A-Z]+\\s+(?=[A-Za-z])"), "").trim()
         // Strip embedded/trailing key-prompt chrome (R1, L2, STUDY R, DOG(L2), isolated R, etc.).
-        t = t.replace(Regex("(?i)\\b(?:STUDY|PRAISE|SCOLD|PET|KNOCK|CALL|PHONE|PALM|RETURN)\\b(?:\\s*\\(?\\s*[A-Z0-9]{1,3}\\s*\\)?)*"), " ")
-        t = t.replace(Regex("(?i)\\bDOG\\s*\\(?\\s*L?\\d*\\s*\\)?"), " ")
+        t = buttonPromptRegex.replace(t, " ")
+        t = t.replace(Regex("(?i)\\b(?:STUDY|PRAISE|SCOLD|PET|KNOCK|CALL|PHONE|PALM|RETURN|DOG)\\b(?:\\s*\\(?\\s*[A-Z0-9]{1,3}\\s*\\)?)*"), " ")
         t = t.replace(Regex("\\b[LR][123]\\b"), " ")
-        t = t.replace(Regex("(?<=\\s)[Rr](?=\\s|$)"), " ")
-        t = t.replace(Regex("\\s*[()]+\\s*"), " ")
+        t = t.replace(Regex("(?<=\\s)[RrLl](?=\\s|$)"), " ")
+        t = t.replace(Regex("\\s*[()\\[\\]]+\\s*"), " ")
         t = t.replace(Regex("^[^A-Za-zÇĞİÖŞÜçğıöşü'\"-]{0,3}"), "").trim()
         // Common OCR typo: isolated "mny" -> "my"
         t = t.replace(Regex("\\bmny\\b", RegexOption.IGNORE_CASE), "my")
+        t = t.replace(Regex("\\bm\\s+(?=[aeiou])", RegexOption.IGNORE_CASE), "I'm ")
         // Strip trailing isolated OCR noise tokens/suffixes seen in logs.
         t = t.replace(Regex("(?:\\s+[,.:;|]?\\s*(?:[RrD]|Ri|ri|[A-Z])\\s*[,.:;|]?)+$"), "").trim()
         t = t.replace(Regex("\\s+[|]$"), "").trim()
@@ -272,19 +278,14 @@ class ScreenCaptureService : Service() {
         if (ratingChromeRegex.containsMatchIn(lower)) return true
         val tokens = lower.split(Regex("[^a-z0-9]+")).filter { it.isNotBlank() }
         if (tokens.isEmpty()) return true
-        val promptTokens = setOf(
-            "l1","l2","l3","r1","r2","r3","lb","rb","lt","rt","x","y","a","b","o",
-            "study","praise","scold","pet","knock","open","take","talk","search","hold","press",
-            "pickup","drop","call","phone","palm","return","dog","mount","dismount"
-        )
-        val promptCount = tokens.count { it in promptTokens }
+        val promptCount = tokens.count { it in hudPromptTokens }
         val dialogueCount = tokens.count { it in englishDialogueMarkers }
+        if (promptCount >= 1 && tokens.size <= 5 && dialogueCount < 2) return true
         if (promptCount >= 2 && dialogueCount < 3) return true
-        if (promptCount >= 1 && tokens.size <= 4) return true
         // Mostly ALL CAPS HUD labels / fragmented OCR.
         val letters = text.count { it.isLetter() }
         val upper = text.count { it.isUpperCase() }
-        if (letters >= 6 && upper > letters * 0.75 && dialogueCount < 3 && tokens.size <= 8) return true
+        if (letters >= 6 && upper > letters * 0.72 && dialogueCount < 3 && tokens.size <= 8) return true
         return false
     }
 
@@ -309,7 +310,7 @@ class ScreenCaptureService : Service() {
 
     private fun isLikelySubtitle(raw: String): Boolean {
         val text = cleanupCandidate(raw)
-        if (text.length < 6 || text.length > 280) return false
+        if (text.length < 2 || text.length > 280) return false
         // Ignore timecodes/progress like 0:12, 1:23:45, 12:34 / 56:78.
         if (Regex("\\d{1,2}:\\d{2}").containsMatchIn(text) && text.count { it.isLetter() } < 12) return false
         if (text.matches(Regex("^[\\d:\\s/.,-]+$"))) return false
@@ -319,7 +320,7 @@ class ScreenCaptureService : Service() {
         // Skip obvious app/chrome/UI overlays.
         if (turkishUiHints.any { compact.contains(it) }) return false
         if (Regex("\\b\\d[\\d.,]*\\s*(b|mn|bin|milyon|k)?\\b.*\\b(izlendi|gün|saat|dakika)\\b").containsMatchIn(compact)) return false
-        if (Regex("\\b(sorting|challenge|challengeg|show products|other videos)\\b").containsMatchIn(compact)) return false
+        if (Regex("\\b(sorting|challenge|challengeg|show products|other videos|view\\s*products)\\b").containsMatchIn(compact)) return false
         if (Regex("^[A-Z0-9\\s]{6,}$").matches(text) && text.count { it.isLetter() } < 10) return false
         if (compact.startsWith("#") && compact.count { it == '#' } >= 1 && compact.count { it.isLetter() && it.code < 128 } < 8) return false
         val hasTurkishChars = Regex("[çğıöşü]").containsMatchIn(lower)
@@ -330,16 +331,21 @@ class ScreenCaptureService : Service() {
         if (wordsAscii.size in 1..6 && uiCount >= 2) return false
         if (lower.matches(Regex("^[xyob a\\d,.:;]+$"))) return false
         val letters = text.count { it.isLetter() }
-        if (letters < 8) return false
+        if (letters < 2) return false
         val letterRatio = letters.toFloat() / text.length.coerceAtLeast(1)
-        if (letterRatio < 0.45f) return false
+        if (letterRatio < 0.4f) return false
         val markerCount = wordsAscii.count { it in englishDialogueMarkers }
         // If it looks Turkish-heavy UI/text and lacks clear English dialogue markers, skip.
-        if (hasTurkishChars && markerCount < 2) return false
+        if (hasTurkishChars && markerCount < 1 && text.length > 12) return false
+        // Short exclamations / replies (e.g. "No.", "Yo!", "Yeah.", "What?") are valid dialogue.
+        if (wordsAscii.size <= 3) {
+            val shortOk = Regex("^[A-Za-z' .!?,-]{1,24}$").matches(text)
+            return shortOk && !looksLikeHudPrompt(text)
+        }
         // Require subtitle/dialogue-like English: enough words and some common markers,
         // or a clear sentence shape.
         val hasSentencePunct = Regex("[.?!]$").containsMatchIn(text) || text.contains('?') || text.contains('!')
-        val looksLikeDialogue = markerCount >= 2 || (wordsAscii.size >= 5 && markerCount >= 1) || hasSentencePunct
+        val looksLikeDialogue = markerCount >= 1 || hasSentencePunct || wordsAscii.size >= 4
         if (!looksLikeDialogue) return false
         // Avoid hashtag/label soup.
         if (text.count { it == '#' } >= 2) return false

@@ -27,7 +27,7 @@ class SubtitleOverlay(private val context: Context) {
         gravity = Gravity.CENTER
         textAlignment = View.TEXT_ALIGNMENT_CENTER
         background = GradientDrawable().apply {
-            setColor(Color.argb(225, 12, 12, 11))
+            setColor(Color.argb(230, 10, 10, 10))
             cornerRadius = 24f
         }
         elevation = 24f
@@ -46,11 +46,11 @@ class SubtitleOverlay(private val context: Context) {
             WindowManager.LayoutParams.TYPE_PHONE
         }
         val position = (prefs.getString("position", "bottom") ?: "bottom").trim().lowercase()
-        val rawOffset = prefs.getInt("offset_dp", 120)
+        val rawOffset = prefs.getInt("offset_dp", 56)
         val (gravity, y) = when (position) {
             "top" -> (Gravity.TOP or Gravity.CENTER_HORIZONTAL) to dp(rawOffset.coerceIn(16, 320))
             "middle", "center", "orta" -> (Gravity.CENTER_VERTICAL or Gravity.CENTER_HORIZONTAL) to 0
-            else -> (Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL) to dp(rawOffset.coerceIn(40, 320))
+            else -> (Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL) to dp(rawOffset.coerceIn(24, 320))
         }
         val lp = layoutParams ?: WindowManager.LayoutParams(
             WindowManager.LayoutParams.MATCH_PARENT,
