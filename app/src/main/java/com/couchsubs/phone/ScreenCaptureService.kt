@@ -542,7 +542,7 @@ class ScreenCaptureService : Service() {
     }
 
     private fun buildNotification(text: String = "Oyun altyazıları algılanıyor ve çevriliyor"): Notification = NotificationCompat.Builder(this, CHANNEL_ID)
-        .setSmallIcon(android.R.drawable.ic_menu_view)
+        .setSmallIcon(R.drawable.ic_stat_nexora)
         .setContentTitle("NEXORA çalışıyor")
         .setContentText(text)
         .setStyle(NotificationCompat.BigTextStyle().bigText(text))
