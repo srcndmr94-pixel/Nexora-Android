@@ -860,7 +860,7 @@ class MainActivity : ComponentActivity() {
         val pill = TextView(this).apply {
             text = if (granted) "Açık" else "Eksik"
             textSize = 10f
-            setTextColor(color(if (granted) INK else INK))
+            setTextColor(color(INK))
             background = bgRound(if (granted) GREEN else AMBER, 9)
             setPadding(dp(9), dp(4), dp(9), dp(4))
         }
@@ -1038,10 +1038,16 @@ class MainActivity : ComponentActivity() {
             progressTintList = ColorStateList.valueOf(color(CYAN))
             thumbTintList = ColorStateList.valueOf(color(TEXT))
             progressBackgroundTintList = ColorStateList.valueOf(color("#16263C"))
-            override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
-                valueLabel.text = valueText(progress)
-                onChange(progress)
-            }
+            setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
+                    valueLabel.text = valueText(progress)
+                    onChange(progress)
+                }
+
+                override fun onStartTrackingTouch(seekBar: SeekBar?) {}
+
+                override fun onStopTrackingTouch(seekBar: SeekBar?) {}
+            })
         }
         val row = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -1322,7 +1328,7 @@ class MainActivity : ComponentActivity() {
                 })
                 return@TextToSpeech
             }
-            view.addView(voiceOption("Varsayılan ses") { prefs.edit().putString("tts_voice", "").apply() }, dialog)
+            view.addView(voiceOption("Varsayılan ses", { prefs.edit().putString("tts_voice", "").apply() }, dialog))
             val voices: List<Voice> = try {
                 engine?.voices?.filter { it.locale?.language?.lowercase(Locale.ROOT) == "tr" }?.sortedBy { it.name } ?: emptyList()
             } catch (_: Exception) {
@@ -1337,7 +1343,7 @@ class MainActivity : ComponentActivity() {
                 })
             } else {
                 for (v in voices.take(20)) {
-                    view.addView(voiceOption(v.name) { prefs.edit().putString("tts_voice", v.name).apply() }, dialog)
+                    view.addView(voiceOption(v.name, { prefs.edit().putString("tts_voice", v.name).apply() }, dialog))
                 }
             }
         }
@@ -1383,7 +1389,7 @@ class MainActivity : ComponentActivity() {
         val send = Intent(Intent.ACTION_SEND).apply {
             type = "text/plain"
             putExtra(Intent.EXTRA_SUBJECT, "NEXORA çalışma kaydı")
-            putExtra(Intent.EXTRA_TEXT, LogStore.read(this).takeLast(100000))
+            putExtra(Intent.EXTRA_TEXT, LogStore.read(this@MainActivity).takeLast(100000))
         }
         startActivity(Intent.createChooser(send, "Kayıtları paylaş"))
     }
