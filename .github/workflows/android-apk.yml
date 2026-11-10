@@ -43,13 +43,13 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release create debug-latest app/build/outputs/apk/debug/app-debug.apk \
-            --title "NEXORA debug-latest" \
+            --title "GameLingoPro debug-latest" \
             --notes "Otomatik oluşturulan debug APK (her derlemede güncellenir)." \
             --target "${{ github.sha }}" \
             --prerelease \
             || gh release upload debug-latest app/build/outputs/apk/debug/app-debug.apk --clobber
           gh release edit debug-latest \
-            --title "NEXORA debug-latest" \
+            --title "GameLingoPro debug-latest" \
             --notes "Otomatik oluşturulan debug APK (her derlemede güncellenir)." \
             --target "${{ github.sha }}" \
             --prerelease
