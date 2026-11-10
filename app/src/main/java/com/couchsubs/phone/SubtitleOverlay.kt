@@ -26,10 +26,6 @@ class SubtitleOverlay(private val context: Context) {
         setLineSpacing(6f, 1.05f)
         gravity = Gravity.CENTER
         textAlignment = View.TEXT_ALIGNMENT_CENTER
-        background = GradientDrawable().apply {
-            setColor(Color.argb(230, 10, 10, 10))
-            cornerRadius = 24f
-        }
         elevation = 24f
         visibility = View.GONE
     }
@@ -70,9 +66,20 @@ class SubtitleOverlay(private val context: Context) {
 
     private fun applyStyle() {
         val size = prefs.getFloat("text_size_sp", 22f).coerceIn(14f, 40f)
-        val color = prefs.getInt("text_color", Color.WHITE)
+        val textColor = prefs.getInt("text_color", Color.WHITE)
+        val opacity = prefs.getInt("bg_opacity", 88).coerceIn(0, 100)
+        val strokeWidth = prefs.getInt("stroke_width_dp", 1).coerceIn(0, 6)
+        val strokeColor = prefs.getInt("stroke_color", Color.BLACK)
+        val maxLines = prefs.getInt("max_lines", 2).coerceIn(1, 4)
         view.textSize = size
-        view.setTextColor(color)
+        view.setTextColor(textColor)
+        view.maxLines = maxLines
+        view.ellipsize = if (maxLines > 1) android.text.TextUtils.TruncateAt.END else null
+        view.background = GradientDrawable().apply {
+            setColor(Color.argb(opacity * 255 / 100, 6, 14, 30))
+            cornerRadius = dp(14).toFloat()
+            if (strokeWidth > 0) setStroke(dp(strokeWidth), strokeColor)
+        }
         view.invalidate()
     }
 
