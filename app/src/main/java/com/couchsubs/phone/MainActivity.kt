@@ -352,7 +352,8 @@ class MainActivity : ComponentActivity() {
 
     private fun statusStrip(): LinearLayout {
         val running = ScreenCaptureService.running
-        val online = prefs.getString("translation_mode", "device") == "online"
+        val mode = prefs.getString("translation_mode", "device") ?: "device"
+        val online = mode == "online" || mode == "ai"
         val cardView = card(14)
         val row = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -363,7 +364,7 @@ class MainActivity : ComponentActivity() {
             setBackgroundColor(color("#152A42"))
             layoutParams = LinearLayout.LayoutParams(dp(1), dp(36)).apply { marginStart = dp(10); marginEnd = dp(10) }
         })
-        row.addView(statusCell(CYAN, if (online) "İnternet Modu" else "Çevrimdışı Mod", if (online) "Daha doğal çeviri" else "Kotasız ve kesintisiz"), LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
+        row.addView(statusCell(CYAN, if (mode == "ai") "Yapay Zekâ" else if (online) "İnternet Modu" else "Çevrimdışı Mod", if (mode == "ai") "En doğal çeviri" else if (online) "Daha doğal çeviri" else "Kotasız ve kesintisiz"), LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
         cardView.addView(row)
         return cardView
     }
@@ -436,6 +437,7 @@ class MainActivity : ComponentActivity() {
         col.addView(resetChip())
         col.addView(areaCard())
         col.addView(modeCard())
+        col.addView(aiCard())
         col.addView(appearanceCard())
         col.addView(performanceCard())
         col.addView(glossaryCard())
@@ -841,6 +843,19 @@ class MainActivity : ComponentActivity() {
             renderTab()
         }, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
         cardView.addView(row)
+        val aiRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        aiRow.addView(modeOption(
+            "Yapay Zekâ",
+            "En doğal çeviri. Ücretsiz anahtar gerekir, günlük sınırı vardır.",
+            true,
+            current == "ai"
+        ) {
+            prefs.edit().putString("translation_mode", "ai").apply()
+            toast(if ((prefs.getString("ai_key", "") ?: "").isBlank()) "Önce aşağıya anahtarı gir" else "Yapay zekâ çevirisi")
+            renderTab()
+        }, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
+        aiRow.addView(View(this), LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
+        cardView.addView(aiRow, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = dp(8) })
         return cardView
     }
 
@@ -1037,6 +1052,57 @@ class MainActivity : ComponentActivity() {
             prefs.getInt("max_chars", 250) - 100,
             { "${it + 100} karakter" }
         ) { prefs.edit().putInt("max_chars", it + 100).apply() })
+        return cardView
+    }
+
+    private fun aiCard(): LinearLayout {
+        val cardView = card()
+        cardView.addView(cardHeader(R.drawable.ic_translate, "Yapay Zekâ Anahtarı", "Ücretsiz anahtarla daha doğal çeviri."))
+        cardView.addView(bodyText("1) console.groq.com/keys adresinden ücretsiz anahtar oluştur (kart gerekmez).\n2) Anahtarı aşağıya yapıştır ve kaydet.\n3) Çeviri Modu'ndan “Yapay Zekâ”yı seç."))
+        val keyInput = EditText(this).apply {
+            setText(prefs.getString("ai_key", "") ?: "")
+            hint = "gsk_..."
+            textSize = 12.5f
+            setSingleLine(true)
+            setTextColor(color(TEXT))
+            setHintTextColor(color(MUTED))
+            setPadding(dp(12), dp(10), dp(12), dp(10))
+            background = bgRound(SURFACE, 12, CARD_LINE)
+        }
+        cardView.addView(keyInput, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = dp(10) })
+        val modelInput = EditText(this).apply {
+            setText(prefs.getString("ai_model", "") ?: "")
+            hint = "Model (boş bırak: openai/gpt-oss-120b)"
+            textSize = 12f
+            setSingleLine(true)
+            setTextColor(color(TEXT))
+            setHintTextColor(color(MUTED))
+            setPadding(dp(12), dp(10), dp(12), dp(10))
+            background = bgRound(SURFACE, 12, CARD_LINE)
+        }
+        cardView.addView(modelInput, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = dp(8) })
+        val saved = (prefs.getString("ai_key", "") ?: "").isNotBlank()
+        cardView.addView(TextView(this).apply {
+            text = if (saved) "Anahtar kayıtlı. Yapay zekâ çevirisi hazır." else "Henüz anahtar yok; çeviri eski yöntemle yapılır."
+            textSize = 12f
+            setTextColor(color(if (saved) GREEN else MUTED))
+            setPadding(0, dp(8), 0, dp(6))
+        })
+        cardView.addView(rowOf(
+            ghostButton("Anahtarı Kaydet") {
+                prefs.edit()
+                    .putString("ai_key", keyInput.text.toString().trim())
+                    .putString("ai_model", modelInput.text.toString().trim())
+                    .apply()
+                toast("Kaydedildi")
+                renderTab()
+            },
+            ghostButton("Anahtarı Sil") {
+                prefs.edit().remove("ai_key").apply()
+                toast("Anahtar silindi")
+                renderTab()
+            }
+        ))
         return cardView
     }
 
@@ -1243,7 +1309,7 @@ class MainActivity : ComponentActivity() {
             }, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
         })
         val info = card()
-        info.addView(bodyText("NEXORA, ekrandaki İngilizce altyazıları okur ve Türkçeye çevirir. Çeviri tamamen cihaz üzerinde yapılabilir; internet modunu seçersen metin çeviri servisine gönderilir."))
+        info.addView(bodyText("NEXORA, ekrandaki İngilizce altyazıları okur ve Türkçeye çevirir. Çeviri tamamen cihaz üzerinde yapılabilir; internet ya da yapay zekâ modunu seçersen altyazı satırı çeviri servisine gönderilir."))
         info.addView(space(10))
         info.addView(bodyText("• Sansür uygulanmaz: kaynak metin neyse o çevrilir.\n• Oyun arayüzü metinleri filtrelenir.\n• Altyazı konumu, boyutu, rengi ve opaklığı ayarlanabilir."))
         col.addView(info)

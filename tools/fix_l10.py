@@ -29,10 +29,10 @@ s = one(
     s,
     '        if (mode == "online") {\n'
     '            translatorReady = true\n'
-    '            LogStore.append(this, "DURUM", "Ä°nternet Ã§eviri modu seÃ§ildi")\n',
+    '            LogStore.append(this, "DURUM", "İnternet çeviri modu seçildi")\n',
     '        if (mode == "online" || mode == "ai") {\n'
     '            translatorReady = true\n'
-    '            LogStore.append(this, "DURUM", if (mode == "ai") "Yapay zekÃ¢ Ã§eviri modu seÃ§ildi" else "Ä°nternet Ã§eviri modu seÃ§ildi")\n',
+    '            LogStore.append(this, "DURUM", if (mode == "ai") "Yapay zekâ çeviri modu seçildi" else "İnternet çeviri modu seçildi")\n',
     "ensureTranslator",
 )
 
@@ -49,7 +49,7 @@ s = one(
     '                    val out = if (mode == "ai") {\n'
     '                        val ai = translateWithAi(toTranslate)\n'
     '                        if (ai == null) {\n'
-    '                            LogStore.append(this, "HATA", "Yapay zekÃ¢ Ã§evirisi alÄ±namadÄ±, otomatik Ã§eviriye geÃ§ildi")\n'
+    '                            LogStore.append(this, "HATA", "Yapay zekâ çevirisi alınamadı, otomatik çeviriye geçildi")\n'
     '                            translateOnline(toTranslate)\n'
     '                        } else ai\n'
     '                    } else translateOnline(toTranslate)\n',
@@ -66,7 +66,7 @@ s = one(
 s = one(
     s,
     'LogStore.append(this, "CEVIRI", "EN: $src || TR(internet): $finalOut")\n',
-    'LogStore.append(this, "CEVIRI", "EN: $src || TR(" + (if (mode == "ai") "yapay zekÃ¢" else "internet") + "): $finalOut")\n',
+    'LogStore.append(this, "CEVIRI", "EN: $src || TR(" + (if (mode == "ai") "yapay zekâ" else "internet") + "): $finalOut")\n',
     "ai log label",
 )
 
@@ -136,11 +136,11 @@ AI_FUNCS = '''    // ---- Yapay zeka cevirisi (Groq, ucretsiz plan; anahtar Ayar
         }
         val first = t.split("\\n").firstOrNull { it.isNotBlank() }?.trim() ?: ""
         var out = if (first.isNotBlank()) first else t
-        for (p in listOf("Turkce:", "TÃ¼rkÃ§e:", "Ceviri:", "Ã‡eviri:", "Translation:")) {
+        for (p in listOf("Turkce:", "Türkçe:", "Ceviri:", "Çeviri:", "Translation:")) {
             if (out.startsWith(p, ignoreCase = true)) out = out.substring(p.length).trim()
         }
-        while (out.startsWith("\\"") || out.startsWith("'") || out.startsWith("â€œ")) out = out.substring(1).trim()
-        while (out.endsWith("\\"") || out.endsWith("'") || out.endsWith("â€")) out = out.dropLast(1).trim()
+        while (out.startsWith("\\"") || out.startsWith("'") || out.startsWith("“")) out = out.substring(1).trim()
+        while (out.endsWith("\\"") || out.endsWith("'") || out.endsWith("”")) out = out.dropLast(1).trim()
         return out
     }
 
@@ -198,8 +198,8 @@ m = one(
 
 m = one(
     m,
-    'row.addView(statusCell(CYAN, if (online) "Ä°nternet Modu" else "Ã‡evrimdÄ±ÅŸÄ± Mod", if (online) "Daha doÄŸal Ã§eviri" else "KotasÄ±z ve kesintisiz"), LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))\n',
-    'row.addView(statusCell(CYAN, if (mode == "ai") "Yapay ZekÃ¢" else if (online) "Ä°nternet Modu" else "Ã‡evrimdÄ±ÅŸÄ± Mod", if (mode == "ai") "En doÄŸal Ã§eviri" else if (online) "Daha doÄŸal Ã§eviri" else "KotasÄ±z ve kesintisiz"), LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))\n',
+    'row.addView(statusCell(CYAN, if (online) "İnternet Modu" else "Çevrimdışı Mod", if (online) "Daha doğal çeviri" else "Kotasız ve kesintisiz"), LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))\n',
+    'row.addView(statusCell(CYAN, if (mode == "ai") "Yapay Zekâ" else if (online) "İnternet Modu" else "Çevrimdışı Mod", if (mode == "ai") "En doğal çeviri" else if (online) "Daha doğal çeviri" else "Kotasız ve kesintisiz"), LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))\n',
     "status text",
 )
 
@@ -210,13 +210,13 @@ m = one(
     "        cardView.addView(row)\n"
     "        val aiRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }\n"
     "        aiRow.addView(modeOption(\n"
-    '            "Yapay ZekÃ¢",\n'
-    '            "En doÄŸal Ã§eviri. Ãœcretsiz anahtar gerekir, gÃ¼nlÃ¼k sÄ±nÄ±rÄ± vardÄ±r.",\n'
+    '            "Yapay Zekâ",\n'
+    '            "En doğal çeviri. Ücretsiz anahtar gerekir, günlük sınırı vardır.",\n'
     "            true,\n"
     '            current == "ai"\n'
     "        ) {\n"
     '            prefs.edit().putString("translation_mode", "ai").apply()\n'
-    '            toast(if ((prefs.getString("ai_key", "") ?: "").isBlank()) "Ã–nce aÅŸaÄŸÄ±ya anahtarÄ± gir" else "Yapay zekÃ¢ Ã§evirisi")\n'
+    '            toast(if ((prefs.getString("ai_key", "") ?: "").isBlank()) "Önce aşağıya anahtarı gir" else "Yapay zekâ çevirisi")\n'
     "            renderTab()\n"
     "        }, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))\n"
     "        aiRow.addView(View(this), LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))\n"
@@ -236,8 +236,8 @@ m = one(
 
 AI_CARD = '''    private fun aiCard(): LinearLayout {
         val cardView = card()
-        cardView.addView(cardHeader(R.drawable.ic_translate, "Yapay ZekÃ¢ AnahtarÄ±", "Ãœcretsiz anahtarla daha doÄŸal Ã§eviri."))
-        cardView.addView(bodyText("1) console.groq.com/keys adresinden Ã¼cretsiz anahtar oluÅŸtur (kart gerekmez).\\n2) AnahtarÄ± aÅŸaÄŸÄ±ya yapÄ±ÅŸtÄ±r ve kaydet.\\n3) Ã‡eviri Modu'ndan â€œYapay ZekÃ¢â€ya seÃ§."))
+        cardView.addView(cardHeader(R.drawable.ic_translate, "Yapay Zekâ Anahtarı", "Ücretsiz anahtarla daha doğal çeviri."))
+        cardView.addView(bodyText("1) console.groq.com/keys adresinden ücretsiz anahtar oluştur (kart gerekmez).\\n2) Anahtarı aşağıya yapıştır ve kaydet.\\n3) Çeviri Modu'ndan “Yapay Zekâ”yı seç."))
         val keyInput = EditText(this).apply {
             setText(prefs.getString("ai_key", "") ?: "")
             hint = "gsk_..."
@@ -251,7 +251,7 @@ AI_CARD = '''    private fun aiCard(): LinearLayout {
         cardView.addView(keyInput, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = dp(10) })
         val modelInput = EditText(this).apply {
             setText(prefs.getString("ai_model", "") ?: "")
-            hint = "Model (boÅŸ bÄ±rak: openai/gpt-oss-120b)"
+            hint = "Model (boş bırak: openai/gpt-oss-120b)"
             textSize = 12f
             setSingleLine(true)
             setTextColor(color(TEXT))
@@ -262,13 +262,13 @@ AI_CARD = '''    private fun aiCard(): LinearLayout {
         cardView.addView(modelInput, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = dp(8) })
         val saved = (prefs.getString("ai_key", "") ?: "").isNotBlank()
         cardView.addView(TextView(this).apply {
-            text = if (saved) "Anahtar kayÄ±tlÄ±. Yapay zekÃ¢ Ã§evirisi hazÄ±r." else "HenÃ¼z anahtar yok; Ã§eviri eski yÃ¶ntemle yapÄ±lÄ±r."
+            text = if (saved) "Anahtar kayıtlı. Yapay zekâ çevirisi hazır." else "Henüz anahtar yok; çeviri eski yöntemle yapılır."
             textSize = 12f
             setTextColor(color(if (saved) GREEN else MUTED))
             setPadding(0, dp(8), 0, dp(6))
         })
         cardView.addView(rowOf(
-            ghostButton("AnahtarÄ± Kaydet") {
+            ghostButton("Anahtarı Kaydet") {
                 prefs.edit()
                     .putString("ai_key", keyInput.text.toString().trim())
                     .putString("ai_model", modelInput.text.toString().trim())
@@ -276,7 +276,7 @@ AI_CARD = '''    private fun aiCard(): LinearLayout {
                 toast("Kaydedildi")
                 renderTab()
             },
-            ghostButton("AnahtarÄ± Sil") {
+            ghostButton("Anahtarı Sil") {
                 prefs.edit().remove("ai_key").apply()
                 toast("Anahtar silindi")
                 renderTab()
@@ -290,8 +290,8 @@ m = one(m, "    private fun glossaryCard(): LinearLayout {", AI_CARD + "    priv
 
 m = one(
     m,
-    "NEXORA, ekrandaki Ä°ngilizce altyazÄ±larÄ± okur ve TÃ¼rkÃ§eye Ã§evirir. Ã‡eviri tamamen cihaz Ã¼zerinde yapÄ±labilir; internet modunu seÃ§ersen metin Ã§eviri servisine gÃ¶nderilir.",
-    "NEXORA, ekrandaki Ä°ngilizce altyazÄ±larÄ± okur ve TÃ¼rkÃ§eye Ã§evirir. Ã‡eviri tamamen cihaz Ã¼zerinde yapÄ±labilir; internet ya da yapay zekÃ¢ modunu seÃ§ersen altyazÄ± satÄ±rÄ± Ã§eviri servisine gÃ¶nderilir.",
+    "NEXORA, ekrandaki İngilizce altyazıları okur ve Türkçeye çevirir. Çeviri tamamen cihaz üzerinde yapılabilir; internet modunu seçersen metin çeviri servisine gönderilir.",
+    "NEXORA, ekrandaki İngilizce altyazıları okur ve Türkçeye çevirir. Çeviri tamamen cihaz üzerinde yapılabilir; internet ya da yapay zekâ modunu seçersen altyazı satırı çeviri servisine gönderilir.",
     "about text",
 )
 io.open(MAIN, "w", encoding="utf-8").write(m)

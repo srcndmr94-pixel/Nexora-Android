@@ -109,6 +109,8 @@ class ScreenCaptureService : Service(), TextToSpeech.OnInitListener {
     @Volatile private var cachedBandWidth = 0
     private val pendingQueue = LinkedBlockingQueue<String>(4)
     private val translationCache = ConcurrentHashMap<String, String>()
+    private val AI_DEFAULT_MODEL = "openai/gpt-oss-120b"
+    private val AI_URL = "https://api.groq.com/openai/v1/chat/completions"
     private val cacheLock = Any()
     private val buttonPromptRegex = Regex("\\b(?:[LR][123SB]|RS|LS|LT|RT|LB|RB|TAB|ESC|ENTER|SHIFT|CTRL|ALT|SPACE)\\b|\\([A-Z0-9]{1,3}\\)|\\[[A-Z0-9]{1,3}\\]", RegexOption.IGNORE_CASE)
     private val ratingChromeRegex = Regex("\\b\\d+[\\.,]?\\d*\\s*[KMBkmb]?\\s*(views?|likes?|subscribers?|abone|izlenme)\\b|@\\w{2,}", RegexOption.IGNORE_CASE)
@@ -150,9 +152,9 @@ class ScreenCaptureService : Service(), TextToSpeech.OnInitListener {
 
     private fun ensureTranslator() {
         val mode = getSharedPreferences(PREFS, MODE_PRIVATE).getString("translation_mode", "device") ?: "device"
-        if (mode == "online") {
+        if (mode == "online" || mode == "ai") {
             translatorReady = true
-            LogStore.append(this, "DURUM", "İnternet çeviri modu seçildi")
+            LogStore.append(this, "DURUM", if (mode == "ai") "Yapay zekâ çeviri modu seçildi" else "İnternet çeviri modu seçildi")
             updateStatus("Hazır. Oyun altyazıları algılanıyor…")
             return
         }
@@ -779,15 +781,21 @@ class ScreenCaptureService : Service(), TextToSpeech.OnInitListener {
         val remember = { text: String ->
             restoreTerms(text, termMap)
         }
-        if (mode == "online") {
+        if (mode == "online" || mode == "ai") {
             translationBusy = true
             Thread {
                 try {
-                    val out = translateOnline(toTranslate)
+                    val out = if (mode == "ai") {
+                        val ai = translateWithAi(toTranslate)
+                        if (ai == null) {
+                            LogStore.append(this, "HATA", "Yapay zekâ çevirisi alınamadı, otomatik çeviriye geçildi")
+                            translateOnline(toTranslate)
+                        } else ai
+                    } else translateOnline(toTranslate)
                     workerHandler?.post {
                         if (!out.isNullOrBlank()) {
                             val finalOut = remember(out)
-                            val k = "online|${src.lowercase(Locale.ROOT)}"
+                            val k = "$mode|${src.lowercase(Locale.ROOT)}"
                             cachePut(k, finalOut)
                             if (finalOut != lastShownText) {
                                 lastSource = src
@@ -798,7 +806,7 @@ class ScreenCaptureService : Service(), TextToSpeech.OnInitListener {
                                 rememberSource(src)
                                 overlay?.show(finalOut, src)
                                 maybeSpeak(finalOut)
-                                LogStore.append(this, "CEVIRI", "EN: $src || TR(internet): $finalOut")
+                                LogStore.append(this, "CEVIRI", "EN: $src || TR(" + (if (mode == "ai") "yapay zekâ" else "internet") + "): $finalOut")
                             }
                         } else {
                             LogStore.append(this, "HATA", "\u0130nternet \u00e7evirisi bo\u015f d\u00f6nd\u00fc: $src")
@@ -864,6 +872,116 @@ class ScreenCaptureService : Service(), TextToSpeech.OnInitListener {
         requestGoogle(source)?.let { if (isUsableTranslation(source, it)) return it }
         requestMyMemory(source)?.let { if (isUsableTranslation(source, it)) return it }
         return null
+    }
+
+    // ---- Yapay zeka cevirisi (Groq, ucretsiz plan; anahtar Ayarlar'dan girilir) ----
+    private fun recentContext(): String {
+        if (!prefBool("context_memory", true)) return ""
+        val lines = synchronized(recentSources) { recentSources.toList() }
+        return lines.takeLast(3).joinToString(" | ")
+    }
+
+    private fun aiKey(): String =
+        (getSharedPreferences(PREFS, MODE_PRIVATE).getString("ai_key", "") ?: "").trim()
+
+    private fun aiModel(): String {
+        val m = (getSharedPreferences(PREFS, MODE_PRIVATE).getString("ai_model", "") ?: "").trim()
+        return if (m.isBlank()) AI_DEFAULT_MODEL else m
+    }
+
+    private fun translateWithAi(source: String): String? {
+        val key = aiKey()
+        if (key.isBlank()) return null
+        val prefs = getSharedPreferences(PREFS, MODE_PRIVATE)
+        val system = buildString {
+            append("Sen profesyonel bir altyazi cevirmenisin. Ingilizce replikleri dogal, akici ve konusulan Turkce'ye cevir. ")
+            append("Konusma dilini, tonu, argoyu, espriyi ve hakareti oldugu gibi koru; kelimesi kelimesine ceviri yapma, ")
+            append("cumleyi Turkce'de nasil soyleniyorsa oyle yaz. Kisa tut, ekranda tek satirda okunmali. ")
+            append("Sadece ceviriyi yaz; tirnak, etiket, aciklama veya not ekleme.")
+            val ctx = recentContext()
+            if (ctx.isNotBlank()) append("\nOnceki replikler (sadece baglam icin, onlari cevirme):\n").append(ctx)
+            val terms = (prefs.getString("glossary_keep", "") ?: "").trim()
+            if (terms.isNotBlank()) append("\nSu isim/terimleri aynen koru: ").append(terms.replace("\n", ", "))
+        }
+        val body = JSONObject().apply {
+            put("model", aiModel())
+            put("temperature", 0.3)
+            put("max_tokens", 400)
+            put("messages", JSONArray().apply {
+                put(JSONObject().put("role", "system").put("content", system))
+                put(JSONObject().put("role", "user").put("content", source))
+            })
+        }
+        val headers = mapOf("Authorization" to "Bearer $key")
+        val resp = httpPostJson(AI_URL, body.toString(), headers, 9000) ?: return null
+        return try {
+            val json = JSONObject(resp)
+            val err = json.optJSONObject("error")?.optString("message", "") ?: ""
+            if (err.isNotBlank()) {
+                LogStore.append(this, "HATA", "AI hatasi: " + err.take(120))
+                return null
+            }
+            val text = json.optJSONArray("choices")
+                ?.optJSONObject(0)
+                ?.optJSONObject("message")
+                ?.optString("content", "") ?: ""
+            val out = cleanAiOutput(text)
+            if (out.isBlank() || !isUsableTranslation(source, out)) null else out
+        } catch (e: Exception) {
+            LogStore.append(this, "HATA", "AI cevirisi okunamadi: ${e.localizedMessage}")
+            null
+        }
+    }
+
+    private fun cleanAiOutput(raw: String): String {
+        var t = raw.replace("\r", "").replace("**", "").trim()
+        if (t.startsWith("```")) {
+            t = t.removePrefix("```").removeSuffix("```").trim()
+        }
+        val first = t.split("\n").firstOrNull { it.isNotBlank() }?.trim() ?: ""
+        var out = if (first.isNotBlank()) first else t
+        for (p in listOf("Turkce:", "Türkçe:", "Ceviri:", "Çeviri:", "Translation:")) {
+            if (out.startsWith(p, ignoreCase = true)) out = out.substring(p.length).trim()
+        }
+        while (out.startsWith("\"") || out.startsWith("'") || out.startsWith("“")) out = out.substring(1).trim()
+        while (out.endsWith("\"") || out.endsWith("'") || out.endsWith("”")) out = out.dropLast(1).trim()
+        return out
+    }
+
+    private fun httpPostJson(urlStr: String, body: String, headers: Map<String, String>, timeoutMs: Int): String? {
+        val conn = (URL(urlStr).openConnection() as HttpURLConnection).apply {
+            requestMethod = "POST"
+            doOutput = true
+            connectTimeout = timeoutMs
+            readTimeout = timeoutMs + 2000
+            setRequestProperty("Content-Type", "application/json; charset=utf-8")
+            setRequestProperty("User-Agent", "$APP_NAME/1.0")
+            setRequestProperty("Accept", "application/json")
+        }
+        headers.forEach { (k, v) -> conn.setRequestProperty(k, v) }
+        return try {
+            conn.outputStream.use { it.write(body.toByteArray(Charsets.UTF_8)) }
+            val code = conn.responseCode
+            val stream = if (code in 200..299) conn.inputStream else conn.errorStream
+            val text = stream?.bufferedReader(Charsets.UTF_8)?.use(BufferedReader::readText)
+            when {
+                code == 429 -> {
+                    LogStore.append(this, "HATA", "AI gunluk/dakikalik siniri doldu (429)")
+                    null
+                }
+                code == 401 -> {
+                    LogStore.append(this, "HATA", "AI anahtari gecersiz (401)")
+                    null
+                }
+                text.isNullOrBlank() -> null
+                else -> text
+            }
+        } catch (e: Exception) {
+            LogStore.append(this, "HATA", "AI baglanti hatasi: ${e.localizedMessage}")
+            null
+        } finally {
+            conn.disconnect()
+        }
     }
 
     private fun httpGet(urlStr: String, timeoutMs: Int): String? {
