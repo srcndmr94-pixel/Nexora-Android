@@ -45,6 +45,7 @@ import java.util.ArrayDeque
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.atomic.AtomicBoolean
+import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
 
@@ -103,6 +104,9 @@ class ScreenCaptureService : Service(), TextToSpeech.OnInitListener {
     @Volatile private var translationBusy = false
     @Volatile private var lastNotified = ""
     @Volatile private var lastNotifyAt = 0L
+    @Volatile private var cachedBand: IntArray? = null
+    @Volatile private var cachedBandAt = 0L
+    @Volatile private var cachedBandWidth = 0
     private val pendingQueue = LinkedBlockingQueue<String>(4)
     private val translationCache = ConcurrentHashMap<String, String>()
     private val cacheLock = Any()
@@ -316,8 +320,15 @@ class ScreenCaptureService : Service(), TextToSpeech.OnInitListener {
             val position = prefs.getString("position", "bottom") ?: "bottom"
             // Custom alan ayarlandiysa (mobilde "ozel" etiketiyle kaydedilir) secili kutuyu kullan.
             val useCustom = position == "custom" || position == "ozel" || prefs.getString("region", "") == "custom"
+            // Otomatik mod: her karede altyazi bandini kendimiz buluruz.
+            val autoBand = if (prefBool("auto_region", true)) cachedSubtitleBand(bitmap) else null
             val left: Int; val top: Int; val right: Int; val bottom: Int
-            if (useCustom) {
+            if (autoBand != null) {
+                left = (w * 0.02f).toInt().coerceIn(0, w - 2)
+                right = (w * 0.98f).toInt().coerceIn(left + 2, w)
+                top = autoBand[0].coerceIn(0, h - 8)
+                bottom = autoBand[1].coerceIn(top + 8, h)
+            } else if (useCustom) {
                 left = (w * prefs.getFloat("region_l", 0.06f)).toInt().coerceIn(0, w - 2)
                 top = (h * prefs.getFloat("region_t", 0.62f)).toInt().coerceIn(0, h - 2)
                 right = (w * prefs.getFloat("region_r", 0.94f)).toInt().coerceIn(left + 2, w)
@@ -498,6 +509,77 @@ class ScreenCaptureService : Service(), TextToSpeech.OnInitListener {
         val tiny = words.count { it.length <= 1 }
         if (tiny >= 3) score -= 12
         return score
+    }
+
+    // Altyazi bandini kendisi bulur: yazi satirlari yuksek kontrastli gecisler uretir.
+    private fun detectSubtitleBand(bmp: Bitmap): IntArray? {
+        val w = bmp.width
+        val h = bmp.height
+        if (w < 80 || h < 120) return null
+        val stepX = max(1, w / 160)
+        val cols = (w - 1) / stepX
+        if (cols < 24) return null
+        val stepY = max(1, h / 300)
+        val scores = IntArray(h)
+        val lum = IntArray(cols + 1)
+        var y = 0
+        while (y < h) {
+            var x = 0
+            var i = 0
+            while (i <= cols) {
+                val px = bmp.getPixel(if (x >= w) w - 1 else x, y)
+                lum[i] = (((px shr 16) and 0xFF) * 299 + ((px shr 8) and 0xFF) * 587 + (px and 0xFF) * 114) / 1000
+                i++
+                x += stepX
+            }
+            var t = 0
+            for (k in 1..cols) if (abs(lum[k] - lum[k - 1]) > 45) t++
+            scores[y] = t
+            y += stepY
+        }
+        // Altyazi genelde ekranin alt yarisinda; baslik/menu karisikligini azaltmak icin ust kismi atla.
+        val window = (h * 0.09f).toInt().coerceIn(28, 160)
+        val rowsInWindow = max(1, window / stepY)
+        val minScore = max(8, (cols * 0.10f * rowsInWindow).toInt())
+        val from = (h * 0.25f).toInt()
+        val to = h - window - 1
+        if (to <= from) return null
+        var bestStart = -1
+        var bestScore = 0
+        var yy = from
+        while (yy <= to) {
+            var sum = 0
+            var k = 0
+            while (k < window) {
+                sum += scores[yy + k]
+                k += stepY
+            }
+            // En alt kenardaki arayuz cubugu altyazidan daha parlak olabilir: hafif ceza.
+            val center = yy + window / 2
+            val adjusted = if (center > (h * 0.93f).toInt()) (sum * 3) / 4 else sum
+            if (adjusted > bestScore) {
+                bestScore = adjusted
+                bestStart = yy
+            }
+            yy += stepY
+        }
+        if (bestStart < 0 || bestScore < minScore) return null
+        val pad = (window * 0.55f).toInt()
+        val top = (bestStart - pad).coerceIn(0, h - 8)
+        val bottom = (bestStart + window + pad).coerceIn(top + 8, h)
+        return intArrayOf(top, bottom)
+    }
+
+    // Ayni bandi kisa sure tekrar kullan; bos sonuc gelirse bir sonraki karede yeniden arar.
+    private fun cachedSubtitleBand(bmp: Bitmap): IntArray? {
+        val now = System.currentTimeMillis()
+        val cached = cachedBand
+        if (cached != null && cachedBandWidth == bmp.width && now - cachedBandAt < 1200L) return cached
+        val band = detectSubtitleBand(bmp)
+        cachedBand = band
+        cachedBandAt = now
+        cachedBandWidth = bmp.width
+        return band
     }
 
     // Kucuk kirpintilari OCR icin buyut; oyun altyazisi aksi halde minicik kaliyor.
