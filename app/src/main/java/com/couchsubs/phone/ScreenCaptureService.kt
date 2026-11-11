@@ -101,6 +101,7 @@ class ScreenCaptureService : Service(), TextToSpeech.OnInitListener {
     @Volatile private var lastSpoken = ""
     @Volatile private var lastFrameHash = 0L
     @Volatile private var lastFrameAt = 0L
+    @Volatile private var processingSince = 0L
     @Volatile private var translationBusy = false
     @Volatile private var lastNotified = ""
     @Volatile private var lastNotifyAt = 0L
@@ -241,7 +242,16 @@ class ScreenCaptureService : Service(), TextToSpeech.OnInitListener {
         reader?.setOnImageAvailableListener({ r ->
             val image = try { r.acquireLatestImage() } catch (_: Exception) { null } ?: return@setOnImageAvailableListener
             try {
-                if (!processing.compareAndSet(false, true)) { image.close(); return@setOnImageAvailableListener }
+                if (!processing.compareAndSet(false, true)) {
+                    // Watchdog: takili kalan bayrak tum hatti dondurmasin.
+                    if (System.currentTimeMillis() - processingSince > 8000L) {
+                        processing.set(false)
+                    } else {
+                        image.close()
+                        return@setOnImageAvailableListener
+                    }
+                }
+                processingSince = System.currentTimeMillis()
                 val bmp = imageToBitmap(image)
                 image.close()
                 if (bmp != null) workerHandler?.post { processFrame(bmp) } else processing.set(false)
@@ -269,7 +279,10 @@ class ScreenCaptureService : Service(), TextToSpeech.OnInitListener {
                 showingSubtitle = false
                 overlay?.show("")
             }
-            if (now - lastFrameAt < idle) return
+            if (now - lastFrameAt < idle) {
+                processing.set(false)
+                return
+            }
             val regionPrefs = getSharedPreferences(PREFS, MODE_PRIVATE)
             // Ayar ekranindaki secim "position" anahtarina yaziliyor; "region" da kabul edilir.
             val region = (regionPrefs.getString("region", null)
@@ -542,6 +555,12 @@ class ScreenCaptureService : Service(), TextToSpeech.OnInitListener {
                                 overlay?.show(out)
                                 maybeSpeak(out)
                                 LogStore.append(this, "CEVIRI", "EN: $src || TR(internet): $out")
+                            }
+                        } else {
+                            LogStore.append(this, "HATA", "\u0130nternet \u00e7evirisi bo\u015f d\u00f6nd\u00fc: $src")
+                            if (System.currentTimeMillis() - lastNotifyAt > 8000L) {
+                                lastNotifyAt = System.currentTimeMillis()
+                                updateStatus("\u00c7eviri al\u0131namad\u0131. \u0130nternet ba\u011flant\u0131s\u0131n\u0131 kontrol et ya da Ayarlar'dan \u00e7evrimd\u0131\u015f\u0131 modu se\u00e7.")
                             }
                         }
                         translationBusy = false
