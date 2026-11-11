@@ -8,6 +8,15 @@ import android.content.res.ColorStateList
 import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
+import android.graphics.Canvas
+import android.graphics.Paint
+import android.graphics.PixelFormat
+import android.graphics.PointF
+import android.graphics.RectF
+import android.content.Context
+import android.view.MotionEvent
+import android.view.WindowManager
+import kotlin.math.abs
 import android.media.projection.MediaProjectionManager
 import android.net.Uri
 import android.os.Build
@@ -480,6 +489,287 @@ class MainActivity : ComponentActivity() {
         })
     }
 
+    // ---------- alan secici ----------
+
+    private var pickerRoot: View? = null
+    private var pickerWm: WindowManager? = null
+
+    private inner class RegionPickerView(context: Context) : View(context) {
+        val sel = RectF()
+        private var pending: FloatArray? = null
+        private val dim = Paint().apply { color = Color.parseColor("#B3050B1A") }
+        private val border = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            style = Paint.Style.STROKE
+            strokeWidth = dp(2).toFloat()
+            color = color(CYAN)
+        }
+        private val grid = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            style = Paint.Style.STROKE
+            strokeWidth = dp(1).toFloat()
+            color = Color.parseColor("#4D22D3EE")
+        }
+        private val knob = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            style = Paint.Style.FILL
+            color = color(CYAN)
+        }
+        private val tag = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = color(CYAN)
+            textSize = dp(11).toFloat()
+        }
+        private var mode = 0
+        private var downX = 0f
+        private var downY = 0f
+        private val start = RectF()
+
+        fun load(l: Float, t: Float, r: Float, b: Float) {
+            pending = floatArrayOf(l, t, r, b)
+        }
+
+        override fun onSizeChanged(w: Int, h: Int, ow: Int, oh: Int) {
+            val p = pending ?: floatArrayOf(0.06f, 0.62f, 0.94f, 0.94f)
+            sel.set(w * p[0], h * p[1], w * p[2], h * p[3])
+            fit()
+        }
+
+        private fun minW(): Float = dp(60).toFloat()
+
+        private fun minH(): Float = dp(30).toFloat()
+
+        private fun fit() {
+            if (width <= 0 || height <= 0) return
+            if (sel.right - sel.left < minW()) sel.right = sel.left + minW()
+            if (sel.bottom - sel.top < minH()) sel.bottom = sel.top + minH()
+            if (sel.left < 0f) {
+                sel.right -= sel.left
+                sel.left = 0f
+            }
+            if (sel.top < 0f) {
+                sel.bottom -= sel.top
+                sel.top = 0f
+            }
+            if (sel.right > width) {
+                sel.left -= sel.right - width
+                sel.right = width.toFloat()
+            }
+            if (sel.bottom > height) {
+                sel.top -= sel.bottom - height
+                sel.bottom = height.toFloat()
+            }
+            if (sel.left < 0f) sel.left = 0f
+            if (sel.top < 0f) sel.top = 0f
+        }
+
+        private fun cornerIndex(): Int {
+            val hs = dp(40).toFloat()
+            val pts = arrayOf(
+                PointF(sel.left, sel.top), PointF(sel.right, sel.top),
+                PointF(sel.right, sel.bottom), PointF(sel.left, sel.bottom)
+            )
+            for (i in pts.indices) {
+                if (abs(downX - pts[i].x) <= hs && abs(downY - pts[i].y) <= hs) return i
+            }
+            return -1
+        }
+
+        override fun onTouchEvent(event: MotionEvent): Boolean {
+            when (event.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    downX = event.x
+                    downY = event.y
+                    start.set(sel)
+                    val c = cornerIndex()
+                    mode = when {
+                        c >= 0 -> c + 2
+                        sel.contains(event.x, event.y) -> 1
+                        else -> 0
+                    }
+                    if (mode == 0) {
+                        sel.set(event.x, event.y, event.x + dp(140), event.y + dp(70))
+                        fit()
+                        start.set(sel)
+                        mode = 4
+                    }
+                    invalidate()
+                }
+                MotionEvent.ACTION_MOVE -> {
+                    val dx = event.x - downX
+                    val dy = event.y - downY
+                    when (mode) {
+                        1 -> {
+                            sel.set(start)
+                            sel.offset(dx, dy)
+                            if (sel.left < 0f) sel.offset(-sel.left, 0f)
+                            if (sel.top < 0f) sel.offset(0f, -sel.top)
+                            if (sel.right > width) sel.offset(width - sel.right, 0f)
+                            if (sel.bottom > height) sel.offset(0f, height - sel.bottom)
+                        }
+                        2 -> {
+                            sel.set(start)
+                            sel.left = (start.left + dx).coerceAtMost(sel.right - minW())
+                            sel.top = (start.top + dy).coerceAtMost(sel.bottom - minH())
+                            fit()
+                        }
+                        3 -> {
+                            sel.set(start)
+                            sel.right = (start.right + dx).coerceAtLeast(sel.left + minW())
+                            sel.top = (start.top + dy).coerceAtMost(sel.bottom - minH())
+                            fit()
+                        }
+                        4 -> {
+                            sel.set(start)
+                            sel.right = (start.right + dx).coerceAtLeast(sel.left + minW())
+                            sel.bottom = (start.bottom + dy).coerceAtLeast(sel.top + minH())
+                            fit()
+                        }
+                        5 -> {
+                            sel.set(start)
+                            sel.left = (start.left + dx).coerceAtMost(sel.right - minW())
+                            sel.bottom = (start.bottom + dy).coerceAtLeast(sel.top + minH())
+                            fit()
+                        }
+                    }
+                    invalidate()
+                }
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> mode = 0
+            }
+            return true
+        }
+
+        override fun onDraw(canvas: Canvas) {
+            super.onDraw(canvas)
+            val w = width.toFloat()
+            val h = height.toFloat()
+            canvas.drawRect(0f, 0f, w, sel.top, dim)
+            canvas.drawRect(0f, sel.bottom, w, h, dim)
+            canvas.drawRect(0f, sel.top, sel.left, sel.bottom, dim)
+            canvas.drawRect(sel.right, sel.top, w, sel.bottom, dim)
+            canvas.drawRect(sel, border)
+            val mx = sel.centerX()
+            val my = sel.centerY()
+            canvas.drawLine(sel.left, my, sel.right, my, grid)
+            canvas.drawLine(mx, sel.top, mx, sel.bottom, grid)
+            val r = dp(8).toFloat()
+            canvas.drawCircle(sel.left, sel.top, r, knob)
+            canvas.drawCircle(sel.right, sel.top, r, knob)
+            canvas.drawCircle(sel.right, sel.bottom, r, knob)
+            canvas.drawCircle(sel.left, sel.bottom, r, knob)
+            canvas.drawText("ALTYAZI ALANI", sel.left + dp(8), sel.top + dp(16), tag)
+        }
+    }
+
+    private fun areaStatusText(): String {
+        val region = prefs.getString("region", "bottom") ?: "bottom"
+        return when (region) {
+            "custom" -> "Özel alan: yatay %" + (prefs.getFloat("region_l", 0.06f) * 100).toInt() +
+                "–%" + (prefs.getFloat("region_r", 0.94f) * 100).toInt() +
+                ", dikey %" + (prefs.getFloat("region_t", 0.62f) * 100).toInt() +
+                "–%" + (prefs.getFloat("region_b", 0.94f) * 100).toInt()
+            "top" -> "Hazır alan: üst bölge"
+            "middle" -> "Hazır alan: orta bölge"
+            "full" -> "Hazır alan: tam ekran"
+            else -> "Hazır alan: alt bölge"
+        }
+    }
+
+    private fun showRegionPicker() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && !Settings.canDrawOverlays(this)) {
+            toast("Önce ekran üstünde gösterim iznini ver")
+            try {
+                startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:" + packageName)))
+            } catch (_: Exception) {
+            }
+            return
+        }
+        hideRegionPicker()
+        val wm = applicationContext.getSystemService(Context.WINDOW_SERVICE) as WindowManager
+        val picker = RegionPickerView(this).apply {
+            load(
+                prefs.getFloat("region_l", 0.06f),
+                prefs.getFloat("region_t", 0.62f),
+                prefs.getFloat("region_r", 0.94f),
+                prefs.getFloat("region_b", 0.94f)
+            )
+        }
+        val bar = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            background = bgRound("#F20A1526", 16, CARD_LINE)
+            setPadding(dp(14), dp(12), dp(14), dp(12))
+        }
+        bar.addView(TextView(this).apply {
+            text = "Kutuyu parmağınla taşı, köşelerinden büyüt. Oyununa geç, altyazının üstüne getir ve Kaydet'e bas."
+            textSize = 11.5f
+            setTextColor(color(TEXT))
+        })
+        bar.addView(space(8))
+        bar.addView(rowOf(
+            ghostButton("Kaydet") {
+                val w = if (picker.width > 0) picker.width else resources.displayMetrics.widthPixels
+                val h = if (picker.height > 0) picker.height else resources.displayMetrics.heightPixels
+                val l = (picker.sel.left / w).coerceIn(0f, 0.96f)
+                val t = (picker.sel.top / h).coerceIn(0f, 0.96f)
+                var r = (picker.sel.right / w).coerceIn(0.03f, 1f)
+                var b = (picker.sel.bottom / h).coerceIn(0.03f, 1f)
+                if (r < l + 0.02f) r = (l + 0.02f).coerceAtMost(1f)
+                if (b < t + 0.02f) b = (t + 0.02f).coerceAtMost(1f)
+                prefs.edit()
+                    .putFloat("region_l", l)
+                    .putFloat("region_t", t)
+                    .putFloat("region_r", r)
+                    .putFloat("region_b", b)
+                    .putString("region", "custom")
+                    .putString("position", "custom")
+                    .apply()
+                LogStore.append(this@MainActivity, "AYAR", "Özel altyazı alanı: x " +
+                    (l * 100).toInt() + "-" + (r * 100).toInt() + ", y " +
+                    (t * 100).toInt() + "-" + (b * 100).toInt())
+                hideRegionPicker()
+                toast("Alan kaydedildi")
+                renderTab()
+            },
+            ghostButton("İptal") { hideRegionPicker() }
+        ))
+        val root = FrameLayout(this).apply {
+            addView(picker, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
+            addView(bar, FrameLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT, Gravity.TOP).apply {
+                topMargin = dp(28)
+                leftMargin = dp(14)
+                rightMargin = dp(14)
+            })
+        }
+        val type = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
+            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
+        else
+            WindowManager.LayoutParams.TYPE_PHONE
+        val params = WindowManager.LayoutParams(
+            MATCH_PARENT,
+            MATCH_PARENT,
+            type,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or
+                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+            PixelFormat.TRANSLUCENT
+        )
+        params.gravity = Gravity.TOP or Gravity.START
+        try {
+            wm.addView(root, params)
+            pickerRoot = root
+            pickerWm = wm
+            toast("Seçici açık — oyununa geçip kutuyu altyazının üstüne getir")
+        } catch (e: Exception) {
+            toast("Seçici açılamadı: " + (e.localizedMessage ?: "izin yok"))
+        }
+    }
+
+    private fun hideRegionPicker() {
+        val v = pickerRoot ?: return
+        pickerRoot = null
+        try {
+            pickerWm?.removeView(v)
+        } catch (_: Exception) {
+        }
+        pickerWm = null
+    }
+
     private fun areaCard(): LinearLayout {
         val cardView = card()
         cardView.addView(cardHeader(R.drawable.ic_area_frame, "Altyazı Alanı (OCR Bölgesi)", "Oyun ekranında altyazıların bulunduğu alanı seç."))
@@ -500,8 +790,14 @@ class MainActivity : ComponentActivity() {
             setPadding(dp(10), dp(6), dp(10), dp(6))
         }, FrameLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT, Gravity.CENTER))
         cardView.addView(frameBox, LinearLayout.LayoutParams(MATCH_PARENT, dp(112)).apply { bottomMargin = dp(12) })
+        cardView.addView(TextView(this).apply {
+            text = areaStatusText()
+            textSize = 11f
+            setTextColor(color(CYAN))
+            setPadding(0, 0, 0, dp(10))
+        })
         cardView.addView(rowOf(
-            ghostButton("Alanı Ayarla") { showAreaDialog() },
+            ghostButton("Alanı Ayarla") { showRegionPicker() },
             ghostButton("Tam Ekran") {
                 prefs.edit().putString("position", "middle").putString("region", "full").putInt("offset_dp", 56).apply()
                 toast("Alan: tam ekran")
@@ -514,51 +810,6 @@ class MainActivity : ComponentActivity() {
             }
         ))
         return cardView
-    }
-
-    private fun showAreaDialog() {
-        val view = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dp(20), dp(6), dp(20), dp(6))
-        }
-        val dialog = AlertDialog.Builder(this)
-            .setTitle("Altyazı alanı")
-            .setView(ScrollView(this).apply { addView(view) })
-            .setNegativeButton("Kapat", null)
-            .create()
-        val options = listOf(
-            "Alt bölge" to "bottom",
-            "Orta bölge" to "middle",
-            "Üst bölge" to "top"
-        )
-        for ((label, key) in options) {
-            view.addView(TextView(this).apply {
-                text = label
-                textSize = 14f
-                setTextColor(color(TEXT))
-                setPadding(0, dp(14), 0, dp(14))
-                isClickable = true
-                setOnClickListener {
-                    prefs.edit().putString("position", key).putString("region", key).apply()
-                    toast("Alan: $label")
-                    dialog.dismiss()
-                    renderTab()
-                }
-            })
-        }
-        view.addView(TextView(this).apply {
-            text = "Kenardan uzaklık"
-            textSize = 12f
-            setTextColor(color(MUTED))
-            setPadding(0, dp(8), 0, dp(4))
-        })
-        view.addView(sliderRow(
-            "Uzaklık",
-            500,
-            prefs.getInt("offset_dp", 56),
-            { "$it dp" }
-        ) { prefs.edit().putInt("offset_dp", it).apply() })
-        dialog.show()
     }
 
     private fun modeCard(): LinearLayout {
@@ -726,7 +977,8 @@ class MainActivity : ComponentActivity() {
         val positionIndex = when (position) {
             "top" -> 0
             "middle" -> 1
-            else -> 2
+            "bottom" -> 2
+            else -> -1
         }
         cardView.addView(space(10))
         cardView.addView(TextView(this).apply {
@@ -1393,6 +1645,11 @@ class MainActivity : ComponentActivity() {
             putExtra(Intent.EXTRA_TEXT, LogStore.read(this@MainActivity).takeLast(100000))
         }
         startActivity(Intent.createChooser(send, "Kayıtları paylaş"))
+    }
+
+    override fun onDestroy() {
+        hideRegionPicker()
+        super.onDestroy()
     }
 
     // ---------- defaults ----------

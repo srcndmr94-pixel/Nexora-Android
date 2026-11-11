@@ -276,6 +276,17 @@ class ScreenCaptureService : Service(), TextToSpeech.OnInitListener {
                 ?: regionPrefs.getString("position", "bottom")
                 ?: "bottom").trim().lowercase(Locale.ROOT)
             val (l, t, r, b) = when (region) {
+                "custom", "ozel" -> {
+                    val cl = regionPrefs.getFloat("region_l", 0.06f).coerceIn(0f, 1f)
+                    val ct = regionPrefs.getFloat("region_t", 0.62f).coerceIn(0f, 1f)
+                    val cr = regionPrefs.getFloat("region_r", 0.94f).coerceIn(0f, 1f)
+                    val cb = regionPrefs.getFloat("region_b", 0.94f).coerceIn(0f, 1f)
+                    val lo = if (cl < cr - 0.02f) cl else (cr - 0.02f).coerceAtLeast(0f)
+                    val to = if (ct < cb - 0.01f) ct else (cb - 0.01f).coerceAtLeast(0f)
+                    val ro = if (cr > lo + 0.02f) cr else (lo + 0.02f).coerceAtMost(1f)
+                    val bo = if (cb > to + 0.01f) cb else (to + 0.01f).coerceAtMost(1f)
+                    floatArrayOf(lo, to, ro, bo)
+                }
                 "top" -> floatArrayOf(0.05f, 0.03f, 0.95f, 0.28f)
                 "middle", "center", "orta" -> floatArrayOf(0.05f, 0.32f, 0.95f, 0.68f)
                 "full" -> floatArrayOf(0.02f, 0.02f, 0.98f, 0.98f)
