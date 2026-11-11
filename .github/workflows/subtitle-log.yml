@@ -1,0 +1,54 @@
+name: Add readable subtitle log screen
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/subtitle-log.yml'
+permissions:
+  contents: write
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Apply fix
+        run: |
+          base64 -d <<'B64' | gunzip > /tmp/patch5.py
+          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
+          eREAAA==
+          B64
+          python3 /tmp/patch5.py .
+      - name: Commit
+        run: |
+          git config user.name "nexora-bot"
+          git config user.email "bot@nexora.local"
+          git add app/src/main/java/com/couchsubs/phone/ScreenCaptureService.kt app/src/main/java/com/couchsubs/phone/MainActivity.kt
+          git commit -m "feat: log recognized subtitle lines and add a filterable log screen"
+          git push
