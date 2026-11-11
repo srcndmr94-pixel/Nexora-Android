@@ -1,0 +1,25 @@
+name: Apply subtitle filter fix
+
+on:
+  push:
+    paths:
+      - tools/fix_l8.py
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Patch sources
+        run: python3 tools/fix_l8.py
+      - name: Commit result
+        run: |
+          git config user.name "nexora-bot"
+          git config user.email "bot@users.noreply.github.com"
+          git add -A
+          git commit -m "fix: restore working UI and tighten subtitle filtering"
+          git push
