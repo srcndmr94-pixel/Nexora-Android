@@ -105,6 +105,9 @@ class ScreenCaptureService : Service(), TextToSpeech.OnInitListener {
     @Volatile private var lastNotifyAt = 0L
     private val pendingQueue = LinkedBlockingQueue<String>(4)
     private val translationCache = ConcurrentHashMap<String, String>()
+    private val cacheLock = Any()
+    private val buttonPromptRegex = Regex("\\b(?:[LR][123SB]|RS|LS|LT|RT|LB|RB|TAB|ESC|ENTER|SHIFT|CTRL|ALT|SPACE)\\b|\\([A-Z0-9]{1,3}\\)|\\[[A-Z0-9]{1,3}\\]", RegexOption.IGNORE_CASE)
+    private val ratingChromeRegex = Regex("\\b\\d+[\\.,]?\\d*\\s*[kmb]?\\s*(views?|likes?|subscribers?|abone|izlenme|görüntülenme)\\b|\\b\\d+\\s*(gün|saat|dakika|hafta|ay|yıl|gun|saat|dakika|hafta|ay|yil)\\s*(önce|once)\\b|@\\w{2,}", RegexOption.IGNORE_CASE)
     // Baglam: son diyaloglar ve kararlilik (ayni satiri bagimsiz cevirmemek icin)
     private val recentSources = ArrayDeque<String>()
     @Volatile private var stableText: String = ""
@@ -406,6 +409,9 @@ class ScreenCaptureService : Service(), TextToSpeech.OnInitListener {
         if (!prefBool("hud_filter", true)) return false
         val lower = Normalizer.normalize(raw, Normalizer.Form.NFKC).lowercase(Locale.ROOT)
         if (ratingChromeRegex.containsMatchIn(lower)) return true
+        // Video/app chrome and titles (YouTube etc.) that should not be translated as subtitles.
+        if (Regex("\\b(diğer videolar|diger videolar|daha fazla video|more videos|recommended|önerilen|onerilen|subscribe|abone ol|beğen|begen|paylaş|paylas|izlenme|görüntülenme|goruntulenme|canlı yayın|canli yayin|live chat|comments?|yorumlar)\\b").containsMatchIn(lower)) return true
+        if (Regex("\\b(extended look|official trailer|official teaser|gameplay reveal|now available|coming soon)\\b").containsMatchIn(lower) && lower.split(Regex("\\s+")).size <= 8) return true
         val tokens = lower.split(Regex("[^a-z0-9]+")).filter { it.isNotBlank() }
         if (tokens.isEmpty()) return true
         val dialogueCount = tokens.count { it in englishDialogueMarkers }
@@ -415,10 +421,12 @@ class ScreenCaptureService : Service(), TextToSpeech.OnInitListener {
         // Pure menu/button chrome made only of UI words.
         val uiCount = tokens.count { it in uiWords }
         if (tokens.size <= 4 && uiCount >= 2 && dialogueCount == 0 && !endsSentence) return true
-        // Shouty HUD labels; CAPS lines that read as a real sentence are kept.
+        // Shouty HUD labels or title-like short lines; CAPS lines that read as a real sentence are kept.
         val letters = raw.count { it.isLetter() }
         val upper = raw.count { it.isUpperCase() }
-        if (letters >= 6 && upper > letters * 0.8 && tokens.size <= 8 && dialogueCount < 2 && !endsSentence) return true
+        if (letters >= 6 && upper > letters * 0.8 && tokens.size <= 10 && dialogueCount < 2 && !endsSentence) return true
+        // Channel/metadata blobs with handles or time markers.
+        if (lower.contains("@") && tokens.size <= 12 && dialogueCount < 2) return true
         return false
     }
 
@@ -437,6 +445,7 @@ class ScreenCaptureService : Service(), TextToSpeech.OnInitListener {
             if (c.length > 140) score -= 25
             if (score > bestScore) { bestScore = score; best = c }
         }
+        if (bestScore < 12) return null
         return best
     }
 
@@ -480,6 +489,14 @@ class ScreenCaptureService : Service(), TextToSpeech.OnInitListener {
         score -= if (t == t.uppercase(Locale.ROOT) && wordCount <= 4) 12 else 0
         if (wordCount >= 3 && dialogue >= 1) score += 10
         if (wordCount >= 5) score += 8
+        // Title/caption-chrome penalties: mixed metadata, handles, time stamps.
+        if (lower.contains("@") || Regex("\\b\\d+\\s*(gün|saat|dakika|hafta|ay|yıl|gun|once|önce)\\b").containsMatchIn(lower)) score -= 18
+        if (Regex("\\b(diğer|diger|video|videos|extended|trailer|teaser)\\b").containsMatchIn(lower)) score -= 10
+        // Prefer sentence-like lines over title blobs.
+        if (wordCount >= 4 && punct == 0 && dialogue == 0) score -= 8
+        // Very noisy OCR (many 1-char tokens / symbols) is unreliable.
+        val tiny = words.count { it.length <= 1 }
+        if (tiny >= 3) score -= 12
         return score
     }
 
