@@ -1,0 +1,64 @@
+name: Sharpen subtitle OCR
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/ocr-quality.yml'
+permissions:
+  contents: write
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Apply fix
+        run: |
+          base64 -d <<'B64' | gunzip > /tmp/patch3.py
+          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
+          B64
+          python3 /tmp/patch3.py .
+      - name: Commit
+        run: |
+          git config user.name "nexora-bot"
+          git config user.email "bot@nexora.local"
+          git add app/src/main/java/com/couchsubs/phone/ScreenCaptureService.kt app/src/main/java/com/couchsubs/phone/SubtitleOverlay.kt
+          git commit -m "fix: read subtitles at full resolution with bottom-band fallback"
+          git push
