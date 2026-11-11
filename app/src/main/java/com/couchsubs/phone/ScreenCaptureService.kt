@@ -41,6 +41,7 @@ import java.net.URL
 import java.net.URLEncoder
 import java.text.Normalizer
 import java.util.Locale
+import java.util.ArrayDeque
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.atomic.AtomicBoolean
@@ -58,15 +59,12 @@ class ScreenCaptureService : Service(), TextToSpeech.OnInitListener {
         const val APP_NAME = "GameLingoPro"
         @Volatile var running: Boolean = false
         private val englishDialogueMarkers = setOf(
-            "the","and","you","your","that","this","with","what","when","where","who","why","how",
-            "are","was","were","have","has","had","will","would","can","could","should","dont","can't",
-            "won't","didn't","isn't","aren't","there","their","they","them","then","than","from","into",
-            "about","just","like","know","want","need","take","give","make","find","look","come","going",
-            "lets","let's","i'm","im","it's","its","i","me","my","we","our","he","she","it","his","her",
-            "to","of","in","on","at","for","as","be","do","not","but","if","or","so","no","yes","up","out",
-            "all","get","got","see","now","here","go","back","open","close","help","wait","stop","run"
+            "i","me","my","we","us","our","you","your","he","him","his","she","her","they","them","their",
+            "a","an","the","and","but","or","so","because","if","when","then","than","to","of","for","on","in","at","with","from","by","as","is","am","are","was","were","be","been","being",
+            "do","does","did","have","has","had","will","would","can","could","should","may","might","must","not","no","yes",
+            "what","who","where","why","how","this","that","these","those","it","there","here","let","get","got","go","come","see","look","know","think","want","need","say","said","tell","told",
+            "hey","hi","hello","please","thanks","sorry","okay","ok","yeah","yep","nope","ain","ain't","don't","dont","can't","cant","won't","wont","i'm","im","it's","its","you're","youre"
         )
-        // Menu/chrome words used only as a combined short-label signal, never to strip from a sentence.
         private val uiWords = setOf(
             "ok","yes","no","back","next","skip","menu","start","pause","resume","continue","options",
             "settings","inventory","map","journal","quests","quest","save","load","exit","close","open",
@@ -107,7 +105,11 @@ class ScreenCaptureService : Service(), TextToSpeech.OnInitListener {
     @Volatile private var lastNotifyAt = 0L
     private val pendingQueue = LinkedBlockingQueue<String>(4)
     private val translationCache = ConcurrentHashMap<String, String>()
-    private val cacheLock = Any()
+    // Baglam: son diyaloglar ve kararlilik (ayni satiri bagimsiz cevirmemek icin)
+    private val recentSources = ArrayDeque<String>()
+    @Volatile private var stableText: String = ""
+    @Volatile private var stableCount: Int = 0
+    @Volatile private var stableAt: Long = 0L
 
     private val projectionCallback = object : MediaProjection.Callback() {
         override fun onStop() {
@@ -121,8 +123,8 @@ class ScreenCaptureService : Service(), TextToSpeech.OnInitListener {
         if (ttsReady) {
             try {
                 tts?.language = Locale("tr", "TR")
-                applyTtsSettings()
-            } catch (_: Exception) { ttsReady = false }
+            } catch (_: Exception) {
+            }
         }
         LogStore.append(this, "DURUM", "Sesli okuma ${if (ttsReady) "hazır" else "kullanılamıyor"}")
     }
@@ -130,35 +132,38 @@ class ScreenCaptureService : Service(), TextToSpeech.OnInitListener {
     override fun onCreate() {
         super.onCreate()
         LogStore.append(this, "DURUM", "Servis oluşturuluyor")
-        overlay = SubtitleOverlay(this)
+        running = true
         createNotificationChannel()
-        try { tts = TextToSpeech(this, this) } catch (_: Exception) {}
-        worker = HandlerThread("$APP_NAME-OCR").also { it.start() }
+        overlay = SubtitleOverlay(applicationContext)
+        worker = HandlerThread("nexora-capture").also { it.start() }
         workerHandler = Handler(worker!!.looper)
+        tts = TextToSpeech(applicationContext, this)
         ensureTranslator()
     }
 
     private fun ensureTranslator() {
         val mode = getSharedPreferences(PREFS, MODE_PRIVATE).getString("translation_mode", "device") ?: "device"
         if (mode == "online") {
-            translatorReady = false
+            translatorReady = true
             LogStore.append(this, "DURUM", "İnternet çeviri modu seçildi")
+            updateStatus("Hazır. Oyun altyazıları algılanıyor…")
             return
         }
-        if (translator != null && translatorReady) return
+        if (translator != null) return
         LogStore.append(this, "DURUM", "Çeviri modeli hazırlanıyor")
         val options = TranslatorOptions.Builder()
             .setSourceLanguage(TranslateLanguage.ENGLISH)
             .setTargetLanguage(TranslateLanguage.TURKISH)
             .build()
-        translator = Translation.getClient(options)
-        translator?.downloadModelIfNeeded(DownloadConditions.Builder().build())
-            ?.addOnSuccessListener {
+        val tr = Translation.getClient(options)
+        translator = tr
+        tr.downloadModelIfNeeded(DownloadConditions.Builder().build())
+            .addOnSuccessListener {
                 translatorReady = true
                 LogStore.append(this, "DURUM", "Çeviri modeli hazır")
+                updateStatus("Hazır. Oyun altyazıları algılanıyor…")
             }
-            ?.addOnFailureListener { e ->
-                translatorReady = false
+            .addOnFailureListener { e ->
                 val msg = "Çeviri modeli indirilemedi: ${e.localizedMessage ?: "hata"}"
                 LogStore.append(this, "HATA", msg)
                 updateStatus("$msg. Ayarlar'dan modeli indirip tekrar deneyin.")
@@ -166,26 +171,21 @@ class ScreenCaptureService : Service(), TextToSpeech.OnInitListener {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        if (intent == null) {
+        val resultCode = intent?.getIntExtra(EXTRA_RESULT_CODE, -1) ?: -1
+        val data = if (Build.VERSION.SDK_INT >= 33) {
+            intent?.getParcelableExtra(EXTRA_DATA, Intent::class.java)
+        } else {
+            @Suppress("DEPRECATION")
+            intent?.getParcelableExtra<Intent>(EXTRA_DATA)
+        }
+        if (intent == null || resultCode == -1 || data == null) {
             LogStore.append(this, "HATA", "Başlatma verisi alınamadı")
             updateStatus("Başlatma verisi alınamadı. Uygulamadan tekrar başlatın.")
             stopSelf()
             return START_NOT_STICKY
         }
-        val resultCode = intent.getIntExtra(EXTRA_RESULT_CODE, 0)
-        val data = if (Build.VERSION.SDK_INT >= 33) {
-            intent.getParcelableExtra(EXTRA_DATA, Intent::class.java)
-        } else {
-            @Suppress("DEPRECATION")
-            intent.getParcelableExtra(EXTRA_DATA)
-        }
-        if (resultCode == 0 || data == null) {
-            LogStore.append(this, "HATA", "Ekran yakalama izni eksik veya iptal")
-            updateStatus("Ekran yakalama izni alınamadı.")
-            stopSelf()
-            return START_NOT_STICKY
-        }
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+        val projectionData = Intent(data)
+        if (Build.VERSION.SDK_INT >= 34) {
             startForeground(
                 NOTIFICATION_ID,
                 buildNotification("$APP_NAME hazırlanıyor…"),
@@ -224,116 +224,114 @@ class ScreenCaptureService : Service(), TextToSpeech.OnInitListener {
                 }
             }
         } else {
-            DisplayMetrics().also { @Suppress("DEPRECATION") wm.defaultDisplay.getRealMetrics(it) }
+            @Suppress("DEPRECATION")
+            DisplayMetrics().also { wm.defaultDisplay.getRealMetrics(it) }
         }
-        val captureScale = (prefInt("capture_scale", 100).coerceIn(40, 100)) / 100f
-        val rawW = max(480, (metrics.widthPixels * captureScale).toInt())
-        val rawH = max(270, (metrics.heightPixels * captureScale).toInt())
-        val maxDim = when (prefInt("quality", 2)) { 0 -> 720; 2 -> 1280; else -> 960 }
-        val longSide = max(rawW, rawH).toFloat()
-        val down = if (longSide > maxDim) maxDim / longSide else 1f
-        val width = max(480, (rawW * down).toInt())
-        val height = max(270, (rawH * down).toInt())
+        val scale = (prefInt("capture_scale", 100).coerceIn(50, 100)) / 100f
+        val qWidth = max(360, (metrics.widthPixels * scale).toInt())
+        val qHeight = max(640, (metrics.heightPixels * scale).toInt())
         val density = metrics.densityDpi
-        reader?.setOnImageAvailableListener(null, null)
-        reader?.close()
-        virtualDisplay?.release()
-        reader = ImageReader.newInstance(width, height, PixelFormat.RGBA_8888, 2)
-        reader?.setOnImageAvailableListener({ r ->
-            val image = try { r.acquireLatestImage() } catch (_: Exception) { null } ?: return@setOnImageAvailableListener
-            try {
-                if (!processing.compareAndSet(false, true)) {
-                    // Watchdog: takili kalan bayrak tum hatti dondurmasin.
-                    if (System.currentTimeMillis() - processingSince > 8000L) {
+        reader = ImageReader.newInstance(qWidth, qHeight, PixelFormat.RGBA_8888, 2).also { ir ->
+            ir.setOnImageAvailableListener({ imageReader ->
+                val now = System.currentTimeMillis()
+                val idle = prefInt("capture_interval_ms", 350).coerceIn(120, 2000).toLong()
+                if (now - lastFrameAt < idle) {
+                    imageReader.acquireLatestImage()?.close()
+                    // Oncekinde takili kaldiysa bekci serbest birakmali.
+                    val stuck = processingSince
+                    if (stuck != 0L && now - stuck > 8000L) {
                         processing.set(false)
-                    } else {
-                        image.close()
-                        return@setOnImageAvailableListener
+                        processingSince = 0L
                     }
+                    return@setOnImageAvailableListener
+                }
+                val image = imageReader.acquireLatestImage() ?: return@setOnImageAvailableListener
+                if (!processing.compareAndSet(false, true)) {
+                    image.close()
+                    return@setOnImageAvailableListener
                 }
                 processingSince = System.currentTimeMillis()
-                val bmp = imageToBitmap(image)
-                image.close()
-                if (bmp != null) workerHandler?.post { processFrame(bmp) } else processing.set(false)
-            } catch (_: Exception) {
-                try { image.close() } catch (_: Exception) {}
-                processing.set(false)
-            }
-        }, workerHandler)
+                lastFrameAt = processingSince
+                try {
+                    val bitmap = imageToBitmap(image)
+                    image.close()
+                    if (bitmap == null) {
+                        processing.set(false); processingSince = 0L
+                        return@setOnImageAvailableListener
+                    }
+                    // Skip identical frames quickly by sampling a few pixels.
+                    val hash = sampleHash(bitmap)
+                    if (hash != 0L && hash == lastFrameHash) {
+                        bitmap.recycle()
+                        val clearMs = prefInt("clear_ms", 2200).coerceIn(800, 8000)
+                        if (showingSubtitle && now - lastSubtitleAt > clearMs) {
+                            overlay?.show("")
+                            lastShownText = ""
+                            showingSubtitle = false
+                        }
+                        processing.set(false); processingSince = 0L
+                        return@setOnImageAvailableListener
+                    }
+                    lastFrameHash = hash
+                    processFrame(bitmap)
+                } catch (e: Exception) {
+                    try { image.close() } catch (_: Exception) {}
+                    processing.set(false); processingSince = 0L
+                    LogStore.append(this, "HATA", "Kare işlenemedi: ${e.localizedMessage}")
+                }
+            }, workerHandler)
+        }
         virtualDisplay = projection?.createVirtualDisplay(
-            "$APP_NAME-Capture", width, height, density,
+            "nexora-screen",
+            qWidth, qHeight, density,
             DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
             reader?.surface, null, workerHandler
         )
-        LogStore.append(this, "DURUM", "Yakalama ${width}x${height} ölçekte hazır")
+        LogStore.append(this, "DURUM", "Yakalama ${qWidth}x${qHeight} ölçekte hazır")
+    }
+
+    private fun sampleHash(b: Bitmap): Long {
+        try {
+            val w = b.width; val h = b.height
+            if (w < 16 || h < 16) return 0L
+            var acc = 1469598103934665603UL
+            val xs = intArrayOf(w/8, w/4, w/2, 3*w/4, 7*w/8)
+            val ys = intArrayOf(h/4, h/3, h/2, 2*h/3, 3*h/4)
+            for (y in ys) for (x in xs) {
+                acc = acc xor b.getPixel(x.coerceIn(0,w-1), y.coerceIn(0,h-1)).toULong()
+                acc *= 1099511628211UL
+            }
+            return acc.toLong()
+        } catch (_: Exception) { return 0L }
     }
 
     private fun processFrame(bitmap: Bitmap) {
         try {
-            val now = System.currentTimeMillis()
-            val idle = prefInt("idle_ms", 1400)
-            val clearMs = prefInt("clear_ms", 2200).coerceIn(800, 8000)
-            if (showingSubtitle && now - lastSubtitleAt > clearMs) {
-                lastShownText = ""
-                lastSource = ""
-                showingSubtitle = false
-                overlay?.show("")
-            }
-            if (now - lastFrameAt < idle) {
-                processing.set(false)
-                return
-            }
-            val regionPrefs = getSharedPreferences(PREFS, MODE_PRIVATE)
-            // Ayar ekranindaki secim "position" anahtarina yaziliyor; "region" da kabul edilir.
-            val region = (regionPrefs.getString("region", null)
-                ?: regionPrefs.getString("position", "bottom")
-                ?: "bottom").trim().lowercase(Locale.ROOT)
-            val (l, t, r, b) = when (region) {
-                "custom", "ozel" -> {
-                    val cl = regionPrefs.getFloat("region_l", 0.06f).coerceIn(0f, 1f)
-                    val ct = regionPrefs.getFloat("region_t", 0.62f).coerceIn(0f, 1f)
-                    val cr = regionPrefs.getFloat("region_r", 0.94f).coerceIn(0f, 1f)
-                    val cb = regionPrefs.getFloat("region_b", 0.94f).coerceIn(0f, 1f)
-                    val lo = if (cl < cr - 0.02f) cl else (cr - 0.02f).coerceAtLeast(0f)
-                    val to = if (ct < cb - 0.01f) ct else (cb - 0.01f).coerceAtLeast(0f)
-                    val ro = if (cr > lo + 0.02f) cr else (lo + 0.02f).coerceAtMost(1f)
-                    val bo = if (cb > to + 0.01f) cb else (to + 0.01f).coerceAtMost(1f)
-                    floatArrayOf(lo, to, ro, bo)
+            val w = bitmap.width
+            val h = bitmap.height
+            val prefs = getSharedPreferences(PREFS, MODE_PRIVATE)
+            val position = prefs.getString("position", "bottom") ?: "bottom"
+            // Custom alan ayarlandiysa (mobilde "ozel" etiketiyle kaydedilir) secili kutuyu kullan.
+            val useCustom = position == "custom" || position == "ozel" || prefs.getString("region", "") == "custom"
+            val left: Int; val top: Int; val right: Int; val bottom: Int
+            if (useCustom) {
+                left = (w * prefs.getFloat("region_l", 0.06f)).toInt().coerceIn(0, w - 2)
+                top = (h * prefs.getFloat("region_t", 0.62f)).toInt().coerceIn(0, h - 2)
+                right = (w * prefs.getFloat("region_r", 0.94f)).toInt().coerceIn(left + 2, w)
+                bottom = (h * prefs.getFloat("region_b", 0.94f)).toInt().coerceIn(top + 2, h)
+            } else {
+                val rect = when (position) {
+                    "top" -> floatArrayOf(0.05f, 0.03f, 0.95f, 0.28f)
+                    "middle", "center", "orta" -> floatArrayOf(0.05f, 0.32f, 0.95f, 0.68f)
+                    "full" -> floatArrayOf(0.02f, 0.02f, 0.98f, 0.98f)
+                    else -> floatArrayOf(0.06f, 0.62f, 0.94f, 0.94f) // bottom
                 }
-                "top" -> floatArrayOf(0.05f, 0.03f, 0.95f, 0.28f)
-                "middle", "center", "orta" -> floatArrayOf(0.05f, 0.32f, 0.95f, 0.68f)
-                "full" -> floatArrayOf(0.02f, 0.02f, 0.98f, 0.98f)
-                else -> floatArrayOf(0.06f, 0.62f, 0.94f, 0.94f)
+                left = (w * rect[0]).toInt().coerceIn(0, w - 2)
+                top = (h * rect[1]).toInt().coerceIn(0, h - 2)
+                right = (w * rect[2]).toInt().coerceIn(left + 2, w)
+                bottom = (h * rect[3]).toInt().coerceIn(top + 2, h)
             }
-            val left = (bitmap.width * l).toInt().coerceIn(0, bitmap.width - 2)
-            val top = (bitmap.height * t).toInt().coerceIn(0, bitmap.height - 2)
-            val right = (bitmap.width * r).toInt().coerceIn(left + 2, bitmap.width)
-            val bottom = (bitmap.height * b).toInt().coerceIn(top + 2, bitmap.height)
             val crop = Bitmap.createBitmap(bitmap, left, top, right - left, bottom - top)
-            val sampleW = max(1, crop.width / 24)
-            val sampleH = max(1, crop.height / 12)
-            var sig = 1469598103934665603UL
-            for (y in 0 until crop.height step sampleH) {
-                for (x in 0 until crop.width step sampleW) {
-                    val p = crop.getPixel(x, y)
-                    sig = sig xor (((p shr 16) and 0xff).toULong())
-                    sig *= 1099511628211UL
-                    sig = sig xor (((p shr 8) and 0xff).toULong())
-                    sig *= 1099511628211UL
-                    sig = sig xor ((p and 0xff).toULong())
-                    sig *= 1099511628211UL
-                }
-            }
-            val frameHash = sig.toLong()
-            val forceRefresh = prefBool("force_refresh", true)
-            if (!forceRefresh && frameHash == lastFrameHash && now - lastFrameAt < 2500L) {
-                crop.recycle()
-                bitmap.recycle()
-                processing.set(false)
-                return
-            }
-            lastFrameHash = frameHash
-            lastFrameAt = now
             val ocrCrop = upscaleForOcr(crop)
             val image = InputImage.fromBitmap(ocrCrop, 0)
             recognizer.process(image)
@@ -382,19 +380,11 @@ class ScreenCaptureService : Service(), TextToSpeech.OnInitListener {
                     processing.set(false)
                 }
         } catch (e: Exception) {
-            LogStore.append(this, "HATA", "Kare işlenemedi: ${e.localizedMessage}")
-            try { bitmap.recycle() } catch (_: Exception) {}
+            bitmap.recycle()
             processing.set(false)
+            LogStore.append(this, "HATA", "Kare işlenemedi: ${e.localizedMessage}")
         }
     }
-
-    // Only key-cap chrome (e.g. "(L2)", "[X]", "L1", "RB") is treated as UI noise.
-    // Ordinary words like "open", "return" or "call" are part of the sentence and
-    // must never be stripped, otherwise the translator receives broken input.
-    private val buttonPromptRegex = Regex(
-        """(?:\(\s*(?:L[123]|R[123]|LB|RB|LT|RT|LS|RS|[XYAB])\s*\)|\[\s*(?:L[123]|R[123]|LB|RB|LT|RT|[XYAB])\s*\]|\b(?:L[123]|R[123])\b|\b(?:LB|RB|LT|RT)\b)"""
-    )
-    private val ratingChromeRegex = Regex("(?i)\\b(mature\\s*17\\+|may\\s*contain\\s*content|inappropriate\\s*for\\s*children|esrb\\.org|likely\\s*mature)\\b")
 
     private fun cleanupCandidate(raw: String): String {
         var t = raw.replace(Regex("\\s+"), " ").trim()
@@ -511,12 +501,83 @@ class ScreenCaptureService : Service(), TextToSpeech.OnInitListener {
         } catch (_: Exception) { src }
     }
 
+    private fun prefString(key: String, def: String): String =
+        getSharedPreferences(PREFS, MODE_PRIVATE).getString(key, def) ?: def
+
+    private fun keepTerms(): List<String> {
+        val raw = prefString("glossary_keep", "")
+        if (raw.isBlank()) return emptyList()
+        return raw.lineSequence()
+            .map { it.trim().trim(',', ';') }
+            .filter { it.length >= 2 }
+            .distinctBy { it.lowercase(Locale.ROOT) }
+            .sortedByDescending { it.length }
+            .take(80)
+            .toList()
+    }
+
+    private fun protectTerms(text: String): Pair<String, List<Pair<String, String>>> {
+        val terms = keepTerms()
+        if (terms.isEmpty()) return text to emptyList()
+        var out = text
+        val map = ArrayList<Pair<String, String>>(terms.size)
+        for ((i, term) in terms.withIndex()) {
+            val token = "XNX${i}ZX"
+            val pattern = try { Regex("\\b" + Regex.escape(term) + "\\b", RegexOption.IGNORE_CASE) } catch (_: Exception) { null }
+            if (pattern == null) continue
+            if (pattern.containsMatchIn(out)) {
+                map.add(token to term)
+                out = pattern.replace(out) { token }
+            }
+        }
+        return out to map
+    }
+
+    private fun restoreTerms(text: String, map: List<Pair<String, String>>): String {
+        var out = text
+        for ((token, term) in map) out = out.replace(token, term, ignoreCase = true)
+        return out
+    }
+
+    private fun rememberSource(src: String) {
+        if (!prefBool("context_memory", true)) return
+        val key = Normalizer.normalize(src, Normalizer.Form.NFKC).lowercase(Locale.ROOT).trim()
+        if (key.length < 2) return
+        synchronized(recentSources) {
+            if (recentSources.lastOrNull()?.let { Normalizer.normalize(it, Normalizer.Form.NFKC).lowercase(Locale.ROOT).trim() } == key) return
+            recentSources.addLast(src)
+            while (recentSources.size > 8) recentSources.removeFirst()
+        }
+    }
+
+    private fun normalizeCmp(s: String): String =
+        Normalizer.normalize(s, Normalizer.Form.NFKC).lowercase(Locale.ROOT).replace(Regex("\\s+"), " ").trim()
+
+    private fun mergeCandidate(raw: String): String {
+        val c = cleanupCandidate(raw).replace(Regex("\\s+"), " ").trim()
+        if (c.isBlank()) return c
+        val prev = lastSource.trim()
+        if (prev.length < 4) return c
+        val cn = normalizeCmp(c)
+        val pn = normalizeCmp(prev)
+        if (cn == pn) return c
+        // OCR bazen cumleyi parca parca veya uzatarak okur: daha tam halini sec.
+        if (cn.startsWith(pn) || pn.startsWith(cn)) return if (c.length >= prev.length) c else prev
+        if (cn.length >= 10 && pn.length >= 10) {
+            val tail = pn.takeLast(min(18, pn.length))
+            val head = cn.take(min(18, cn.length))
+            if (cn.contains(tail) || pn.contains(head)) return if (c.length >= prev.length) c else prev
+        }
+        return c
+    }
+
     private fun handleResult(result: Text): Boolean {
         val now = System.currentTimeMillis()
         val lines = result.textBlocks.flatMap { b -> b.lines.mapNotNull { it.text?.trim() } }
             .filter { it.isNotBlank() }
         val joined = lines.joinToString(" ").replace(Regex("\\s+"), " ").trim()
-        val candidate = pickBestSubtitleCandidate(lines, joined)
+        var candidate = pickBestSubtitleCandidate(lines, joined)
+        if (candidate != null) candidate = mergeCandidate(candidate)
         if (candidate.isNullOrBlank()) {
             // keep showing the current subtitle until clear_ms expires; do not spam "not found"
             if (now - lastNotifyAt > 8000L && !showingSubtitle) {
@@ -531,15 +592,28 @@ class ScreenCaptureService : Service(), TextToSpeech.OnInitListener {
             }
             return false
         }
-        val key = candidate.lowercase(Locale.ROOT)
-        if (key == lastSource && showingSubtitle && now - lastShownAt < 4500L) return false
-        // Kendi gosterdigimiz ceviri tekrar okunursa sonsuz dongu olur.
+        val cmp = normalizeCmp(candidate)
         val shownNorm = Normalizer.normalize(lastShownText, Normalizer.Form.NFKC).lowercase(Locale.ROOT).trim()
-        if (shownNorm.length >= 4 && key == shownNorm) return false
-        if (key.any { it in "\u015f\u011f\u0131\u015e\u011e\u0130" }) return false
-        val partialKey = if (candidate.length >= 8) candidate.lowercase(Locale.ROOT).take(min(24, candidate.length)) else candidate.lowercase(Locale.ROOT)
-        if (partialKey == lastPartialKey && now - lastPartialAt < 1200L && key != lastSource) return false
-        lastPartialKey = partialKey
+        if (shownNorm.length >= 4 && cmp == shownNorm) return false
+        if (cmp.any { it in "\u015f\u011f\u0131\u015e\u011e\u0130" }) return false
+        val lastCmp = normalizeCmp(lastSource)
+        val isSame = lastCmp.isNotEmpty() && (cmp == lastCmp)
+        if (isSame && showingSubtitle && now - lastShownAt < 4500L) return false
+        val isExtension = lastCmp.length >= 6 && cmp.length > lastCmp.length && (cmp.startsWith(lastCmp) || lastCmp.startsWith(cmp))
+        // Yeni ve farkli bir satirsa bir kare daha gorup titremeyi azalt (uzayan cumle hariç).
+        if (!isSame && !isExtension && prefBool("stabilize", true)) {
+            if (normalizeCmp(stableText) == cmp) {
+                stableCount += 1
+            } else {
+                stableText = candidate
+                stableCount = 1
+                stableAt = now
+            }
+            val stableEnough = stableCount >= 2 || (now - stableAt >= 700L && candidate.length >= 8)
+            if (!stableEnough) return false
+        }
+        stableText = ""; stableCount = 0
+        lastPartialKey = if (candidate.length >= 8) cmp.take(min(24, cmp.length)) else cmp
         lastPartialAt = now
         // Mark presence immediately so clear_ms is measured from recognition, not translation finish.
         lastSubtitleAt = now
@@ -559,6 +633,7 @@ class ScreenCaptureService : Service(), TextToSpeech.OnInitListener {
             val ws = cut.lastIndexOf(' ')
             src = (if (ws > 24) cut.substring(0, ws) else cut).trimEnd() + "…"
         }
+        val (protectedSrc, termMap) = protectTerms(src)
         val mode = getSharedPreferences(PREFS, MODE_PRIVATE).getString("translation_mode", "device") ?: "device"
         val key = "$mode|${src.lowercase(Locale.ROOT)}"
         cacheGet(key)?.let { cached ->
@@ -568,15 +643,18 @@ class ScreenCaptureService : Service(), TextToSpeech.OnInitListener {
                 lastShownAt = System.currentTimeMillis()
                 lastSubtitleAt = lastShownAt
                 showingSubtitle = true
+                rememberSource(src)
                 overlay?.show(cached, src)
                 maybeSpeak(cached)
                 LogStore.append(this, "CEVIRI", "EN: $src || TR(${if (mode == "online") "internet" else "cihaz"}): $cached")
             }
             return
         }
-        if (!pendingQueue.offer(src)) {
+        // Kuyruga korunmus metni ve kaynak metni birlikte koy: "src\n--NX--\nprotected"
+        val payload = if (termMap.isEmpty()) src else (src + "\n--NX--\n" + protectedSrc)
+        if (!pendingQueue.offer(payload)) {
             pendingQueue.poll()
-            pendingQueue.offer(src)
+            pendingQueue.offer(payload)
         }
         drainPending(mode)
     }
@@ -594,25 +672,34 @@ class ScreenCaptureService : Service(), TextToSpeech.OnInitListener {
 
     private fun drainPending(mode: String) {
         if (translationBusy) return
-        val src = pendingQueue.poll() ?: return
+        val payload = pendingQueue.poll() ?: return
+        val parts = payload.split("\n--NX--\n", limit = 2)
+        val src = parts[0]
+        val toTranslate = if (parts.size == 2) parts[1] else src
+        val (_, termMap) = protectTerms(src)
+        val remember = { text: String ->
+            restoreTerms(text, termMap)
+        }
         if (mode == "online") {
             translationBusy = true
             Thread {
                 try {
-                    val out = translateOnline(src)
+                    val out = translateOnline(toTranslate)
                     workerHandler?.post {
                         if (!out.isNullOrBlank()) {
+                            val finalOut = remember(out)
                             val k = "online|${src.lowercase(Locale.ROOT)}"
-                            cachePut(k, out)
-                            if (out != lastShownText) {
+                            cachePut(k, finalOut)
+                            if (finalOut != lastShownText) {
                                 lastSource = src
-                                lastShownText = out
+                                lastShownText = finalOut
                                 lastShownAt = System.currentTimeMillis()
                                 lastSubtitleAt = lastShownAt
                                 showingSubtitle = true
-                                overlay?.show(out, src)
-                                maybeSpeak(out)
-                                LogStore.append(this, "CEVIRI", "EN: $src || TR(internet): $out")
+                                rememberSource(src)
+                                overlay?.show(finalOut, src)
+                                maybeSpeak(finalOut)
+                                LogStore.append(this, "CEVIRI", "EN: $src || TR(internet): $finalOut")
                             }
                         } else {
                             LogStore.append(this, "HATA", "\u0130nternet \u00e7evirisi bo\u015f d\u00f6nd\u00fc: $src")
@@ -640,24 +727,26 @@ class ScreenCaptureService : Service(), TextToSpeech.OnInitListener {
                 lastNotifyAt = System.currentTimeMillis()
             }
             // keep the line queued for a later attempt
-            pendingQueue.offer(src)
+            pendingQueue.offer(payload)
             return
         }
         translationBusy = true
-        tr.translate(src)
+        tr.translate(toTranslate)
             .addOnSuccessListener { out ->
                 if (!out.isNullOrBlank()) {
+                    val finalOut = remember(out)
                     val k = "device|${src.lowercase(Locale.ROOT)}"
-                    cachePut(k, out)
-                    if (out != lastShownText) {
+                    cachePut(k, finalOut)
+                    if (finalOut != lastShownText) {
                         lastSource = src
-                        lastShownText = out
+                        lastShownText = finalOut
                         lastShownAt = System.currentTimeMillis()
                         lastSubtitleAt = lastShownAt
                         showingSubtitle = true
-                        overlay?.show(out, src)
-                        maybeSpeak(out)
-                        LogStore.append(this, "CEVIRI", "EN: $src || TR(cihaz): $out")
+                        rememberSource(src)
+                        overlay?.show(finalOut, src)
+                        maybeSpeak(finalOut)
+                        LogStore.append(this, "CEVIRI", "EN: $src || TR(cihaz): $finalOut")
                     }
                 }
                 translationBusy = false
@@ -784,41 +873,49 @@ class ScreenCaptureService : Service(), TextToSpeech.OnInitListener {
         val rowStride = plane.rowStride
         val rowPadding = rowStride - pixelStride * image.width
         val paddedWidth = image.width + rowPadding / pixelStride
-        val padded = Bitmap.createBitmap(paddedWidth, image.height, Bitmap.Config.ARGB_8888)
-        padded.copyPixelsFromBuffer(plane.buffer)
-        val result = Bitmap.createBitmap(padded, 0, 0, image.width, image.height)
-        padded.recycle()
-        result
+        val bitmap = Bitmap.createBitmap(paddedWidth, image.height, Bitmap.Config.ARGB_8888)
+        bitmap.copyPixelsFromBuffer(plane.buffer)
+        Bitmap.createBitmap(bitmap, 0, 0, image.width, image.height).also { cropped ->
+            if (cropped !== bitmap) bitmap.recycle()
+        }
     } catch (e: Exception) { LogStore.append(this, "HATA", "Kare dönüştürülemedi: ${e.localizedMessage}"); null }
 
     private fun createNotificationChannel() {
-        if (Build.VERSION.SDK_INT >= 26) {
-            val channel = NotificationChannel(CHANNEL_ID, "$APP_NAME ekran yakalama", NotificationManager.IMPORTANCE_LOW)
-            getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
-        }
+        if (Build.VERSION.SDK_INT < 26) return
+        val nm = getSystemService(NotificationManager::class.java)
+        val ch = NotificationChannel(CHANNEL_ID, "NEXORA altyazı servisi", NotificationManager.IMPORTANCE_LOW)
+        nm.createNotificationChannel(ch)
     }
 
     private fun buildNotification(text: String = "Oyun altyazıları algılanıyor ve çevriliyor"): Notification = NotificationCompat.Builder(this, CHANNEL_ID)
-        .setSmallIcon(R.drawable.ic_stat_nexora)
-        .setContentTitle("$APP_NAME çalışıyor")
+        .setSmallIcon(R.mipmap.ic_launcher)
+        .setContentTitle(APP_NAME)
         .setContentText(text)
-        .setStyle(NotificationCompat.BigTextStyle().bigText(text))
         .setOngoing(true)
+        .setOnlyAlertOnce(true)
         .build()
 
     override fun onDestroy() {
         running = false
         LogStore.append(this, "DURUM", "Servis durduruluyor")
-        virtualDisplay?.release()
-        reader?.setOnImageAvailableListener(null, null)
-        reader?.close()
-        projection?.stop()
-        overlay?.hide()
-        recognizer.close()
-        translator?.close()
+        try { reader?.setOnImageAvailableListener(null, null) } catch (_: Exception) {}
+        try { virtualDisplay?.release() } catch (_: Exception) {}
+        try { projection?.unregisterCallback(projectionCallback) } catch (_: Exception) {}
+        try { projection?.stop() } catch (_: Exception) {}
+        try { reader?.close() } catch (_: Exception) {}
+        try { recognizer.close() } catch (_: Exception) {}
+        try { translator?.close() } catch (_: Exception) {}
         try { tts?.stop(); tts?.shutdown() } catch (_: Exception) {}
-        tts = null; ttsReady = false
         worker?.quitSafely()
+        overlay?.hide()
+        translator = null
+        projection = null
+        virtualDisplay = null
+        reader = null
+        overlay = null
+        worker = null
+        workerHandler = null
+        tts = null
         super.onDestroy()
     }
 

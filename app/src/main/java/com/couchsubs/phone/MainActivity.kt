@@ -1,94 +1,96 @@
 package com.couchsubs.phone
 
 import android.Manifest
+import android.animation.ValueAnimator
+import android.app.Activity
+import android.app.AlertDialog
+import android.content.Context
 import android.content.Intent
-import android.content.SharedPreferences
 import android.content.pm.PackageManager
-import android.content.res.ColorStateList
-import android.graphics.Color
-import android.graphics.Typeface
-import android.graphics.drawable.GradientDrawable
+import android.graphics.BitmapFactory
 import android.graphics.Canvas
+import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.PixelFormat
-import android.graphics.PointF
 import android.graphics.RectF
-import android.content.Context
-import android.view.MotionEvent
-import android.view.WindowManager
-import kotlin.math.abs
+import android.graphics.Typeface
+import android.graphics.drawable.Drawable
+import android.graphics.drawable.GradientDrawable
 import android.media.projection.MediaProjectionManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
 import android.speech.tts.TextToSpeech
-import android.speech.tts.Voice
 import android.view.Gravity
+import android.view.MotionEvent
 import android.view.View
-import android.view.ViewGroup
-import android.view.ViewGroup.LayoutParams.MATCH_PARENT
-import android.view.ViewGroup.LayoutParams.WRAP_CONTENT
-import android.widget.Button
+import android.view.WindowManager
+import android.view.animation.DecelerateInterpolator
+import android.widget.EditText
 import android.widget.FrameLayout
+import android.widget.FrameLayout.LayoutParams
 import android.widget.ImageView
 import android.widget.LinearLayout
+import android.widget.LinearLayout.LayoutParams.MATCH_PARENT
+import android.widget.LinearLayout.LayoutParams.WRAP_CONTENT
 import android.widget.ScrollView
 import android.widget.SeekBar
-import android.widget.Space
 import android.widget.TextView
 import android.widget.Toast
-import androidx.activity.ComponentActivity
-import androidx.activity.result.contract.ActivityResultContracts
-import android.app.AlertDialog
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
+import androidx.core.graphics.drawable.DrawableCompat
 import com.google.mlkit.common.model.DownloadConditions
-import com.google.mlkit.common.model.RemoteModelManager
 import com.google.mlkit.nl.translate.TranslateLanguage
-import com.google.mlkit.nl.translate.TranslateRemoteModel
 import com.google.mlkit.nl.translate.Translation
 import com.google.mlkit.nl.translate.TranslatorOptions
+import java.text.Normalizer
+import java.text.SimpleDateFormat
+import java.util.Date
 import java.util.Locale
+import kotlin.math.max
+import kotlin.math.min
+import kotlin.math.roundToInt
 
-class MainActivity : ComponentActivity() {
+class MainActivity : Activity() {
 
     private companion object {
-        const val PREFS = "nexora_overlay"
+        const val REQ_CAPTURE = 101
+        const val REQ_NOTIF = 102
         const val BG = "#050B1A"
-        const val CARD = "#0A1526"
-        const val CARD_LINE = "#14304C"
-        const val TEXT = "#EAF2FF"
-        const val MUTED = "#7F97B3"
+        const val CARD = "#0E1A2D"
+        const val CARD_LINE = "#1A3047"
+        const val SURFACE = "#071325"
         const val CYAN = "#22D3EE"
-        const val CYAN_DEEP = "#0EA5C9"
-        const val NAVY = "#071022"
         const val GREEN = "#34D399"
         const val AMBER = "#FBBF24"
-        const val INK = "#04121C"
+        const val RED = "#FB7185"
+        const val TEXT = "#EAF4FF"
+        const val MUTED = "#7F98B2"
+        const val INK = "#04131E"
     }
 
-    private lateinit var prefs: SharedPreferences
-    private lateinit var content: FrameLayout
-    private val navIcons = mutableListOf<ImageView>()
-    private val navLabels = mutableListOf<TextView>()
-    private var activeTab = 0
-    private var overlayPermissionRequested = false
-    private var modelView: TextView? = null
-    private val modelManager by lazy { RemoteModelManager.getInstance() }
-    private val enTrModel by lazy { TranslateRemoteModel.Builder(TranslateLanguage.ENGLISH).build() }
+    private val prefs by lazy { getSharedPreferences("nexora_overlay", Context.MODE_PRIVATE) }
+    private lateinit var mainRoot: FrameLayout
+    private lateinit var contentHost: FrameLayout
+    private lateinit var bottomBar: LinearLayout
+    private lateinit var homeTab: LinearLayout
+    private lateinit var settingsTab: LinearLayout
+    private lateinit var historyTab: LinearLayout
+    private lateinit var centerWrap: FrameLayout
+    private lateinit var activeDot: View
+    private var currentTab = 0
 
-    private val projectionLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
-        val data = result.data
-        if (result.resultCode == RESULT_OK && data != null) {
+    private val projectionLauncher = registerForActivityResult(androidx.activity.result.contract.ActivityResultContracts.StartActivityForResult()) { result ->
+        if (result.resultCode == RESULT_OK && result.data != null) {
             LogStore.append(this, "DURUM", "Ekran yakalama izni verildi, servis başlatılıyor")
-            val svc = Intent(this, ScreenCaptureService::class.java).apply {
+            val i = Intent(this, ScreenCaptureService::class.java).apply {
                 putExtra(ScreenCaptureService.EXTRA_RESULT_CODE, result.resultCode)
-                putExtra(ScreenCaptureService.EXTRA_DATA, data)
+                putExtra(ScreenCaptureService.EXTRA_DATA, result.data)
             }
             try {
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(svc) else startService(svc)
-                toast("NEXORA başlatıldı — oyununa geçebilirsin")
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(i) else startService(i)
             } catch (e: Exception) {
                 val msg = "Servis başlatılamadı: ${e.localizedMessage ?: "bilinmeyen hata"}"
                 LogStore.append(this, "HATA", msg)
@@ -96,334 +98,368 @@ class MainActivity : ComponentActivity() {
             }
         } else {
             LogStore.append(this, "HATA", "Ekran yakalama izni reddedildi/iptal edildi")
-            toast("Ekran yakalama izni verilmedi")
+            toast("Ekran izni gerekli")
         }
-        renderTab()
+        updateStatusUi()
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        prefs = getSharedPreferences(PREFS, MODE_PRIVATE)
         window.statusBarColor = color(BG)
-        val root = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setBackgroundColor(color(BG))
-        }
-        content = FrameLayout(this).apply {
-            layoutParams = LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f)
-        }
-        root.addView(content)
-        root.addView(navBarView())
-        setContentView(root)
+        window.navigationBarColor = color(BG)
+        try {
+            val c = window.decorView.systemUiVisibility
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                window.decorView.systemUiVisibility = c and View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR.inv()
+            }
+        } catch (_: Exception) {}
+        setContentView(buildUi())
+        requestMissingPermissionsOnLaunch()
         renderTab()
+        if (prefs.getBoolean("auto_start", false)) maybeStart()
         LogStore.append(this, "DURUM", "Uygulama açıldı")
     }
 
     override fun onResume() {
         super.onResume()
-        if (::content.isInitialized) renderTab()
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && !Settings.canDrawOverlays(this) && !overlayPermissionRequested) {
-            overlayPermissionRequested = true
-            requestOverlayPermission()
+        updateStatusUi()
+    }
+
+    private fun requestMissingPermissionsOnLaunch() {
+        if (Build.VERSION.SDK_INT >= 33) {
+            if (ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+                ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.POST_NOTIFICATIONS), REQ_NOTIF)
+            }
         }
     }
 
-    // ---------- shell ----------
+    private fun color(hex: String): Int = Color.parseColor(hex)
+
+    private fun dp(v: Int): Int = (v * resources.displayMetrics.density).toInt()
+
+    private fun bgRound(fill: String, radiusDp: Int, stroke: String? = null, strokeDp: Int = 1): GradientDrawable =
+        GradientDrawable().apply {
+            setColor(color(fill))
+            cornerRadius = dp(radiusDp).toFloat()
+            if (stroke != null) setStroke(dp(strokeDp), color(stroke))
+        }
+
+    private fun maybeStart() {
+        if (!overlayGranted()) {
+            requestOverlayPermission()
+            return
+        }
+        val pm = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
+        projectionLauncher.launch(pm.createScreenCaptureIntent())
+    }
+
+    private fun stopServiceAction() {
+        stopService(Intent(this, ScreenCaptureService::class.java))
+        toast("Çeviri durduruldu")
+        updateStatusUi()
+    }
+
+    private fun overlayGranted(): Boolean =
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) Settings.canDrawOverlays(this) else true
+
+    private fun notificationGranted(): Boolean =
+        if (Build.VERSION.SDK_INT >= 33) ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED else true
+
+    private fun requestOverlayPermission() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            val intent = Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName"))
+            startActivity(intent)
+            toast("Üstte gösterme iznini aç")
+        }
+    }
+
+    private fun requestNotificationPermission() {
+        if (Build.VERSION.SDK_INT >= 33) {
+            ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.POST_NOTIFICATIONS), REQ_NOTIF)
+        } else toast("Bildirim izni bu sürümde otomatik")
+    }
+
+    // ---------- UI ----------
+
+    private fun buildUi(): View {
+        mainRoot = FrameLayout(this).apply { setBackgroundColor(color(BG)) }
+
+        contentHost = FrameLayout(this).apply { id = View.generateViewId() }
+        mainRoot.addView(contentHost, LayoutParams(MATCH_PARENT, MATCH_PARENT).apply {
+            bottomMargin = dp(96)
+        })
+
+        bottomBar = buildBottomBar()
+        mainRoot.addView(bottomBar, LayoutParams(MATCH_PARENT, dp(88), Gravity.BOTTOM))
+
+        return mainRoot
+    }
+
+    private fun buildBottomBar(): LinearLayout {
+        val bar = FrameLayout(this).apply {
+            background = bgRound("#0A1628", 0, "#12243A")
+            elevation = dp(12).toFloat()
+        }
+
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(8), dp(8), dp(8), dp(10))
+        }
+
+        homeTab = tabItem(R.drawable.ic_nav_home, "Ana Sayfa") { switchTab(0) }
+        settingsTab = tabItem(R.drawable.ic_nav_settings, "Ayarlar") { switchTab(1) }
+        historyTab = tabItem(R.drawable.ic_nav_history, "Geçmiş") { switchTab(2) }
+
+        centerWrap = FrameLayout(this).apply {
+            setPadding(0, 0, 0, dp(2))
+        }
+        val centerBtn = FrameLayout(this).apply {
+            val sz = dp(58)
+            layoutParams = LayoutParams(sz, sz, Gravity.CENTER)
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.OVAL
+                setColor(color(CYAN))
+            }
+            elevation = dp(8).toFloat()
+            isClickable = true
+            setOnClickListener {
+                if (ScreenCaptureService.running) stopServiceAction() else maybeStart()
+                updateStatusUi()
+            }
+            addView(ImageView(this@MainActivity).apply {
+                id = 0x4E01
+                setImageResource(R.drawable.ic_play)
+                setColorFilter(color(INK))
+            }, LayoutParams(dp(28), dp(28), Gravity.CENTER))
+        }
+        activeDot = View(this).apply {
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.OVAL
+                setColor(color(RED))
+            }
+            visibility = View.GONE
+        }
+        centerWrap.addView(centerBtn)
+        centerWrap.addView(activeDot, LayoutParams(dp(10), dp(10), Gravity.TOP or Gravity.END).apply {
+            topMargin = dp(2); rightMargin = dp(2)
+        })
+
+        row.addView(homeTab, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
+        row.addView(settingsTab, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
+        row.addView(centerWrap, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
+        row.addView(historyTab, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
+        row.addView(View(this), LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f)) // balance
+
+        // re-center: put center in middle by weight layout with 5 slots
+        row.removeAllViews()
+        val l1 = LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f)
+        val l2 = LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f)
+        val l3 = LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f)
+        val l4 = LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f)
+        val l5 = LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f)
+        row.addView(homeTab, l1)
+        row.addView(settingsTab, l2)
+        val centerHolder = LinearLayout(this).apply { gravity = Gravity.CENTER }
+        centerHolder.addView(centerWrap)
+        row.addView(centerHolder, l3)
+        row.addView(historyTab, l4)
+        val profileTab = tabItem(R.drawable.ic_nav_settings, "Sistem") { switchTab(1) }
+        row.addView(profileTab, l5)
+
+        bar.addView(row, LayoutParams(MATCH_PARENT, MATCH_PARENT))
+        return LinearLayout(this).apply { addView(bar, LinearLayout.LayoutParams(MATCH_PARENT, dp(88))) }
+    }
+
+    private fun tabItem(iconRes: Int, label: String, onClick: () -> Unit): LinearLayout = LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL
+        gravity = Gravity.CENTER
+        setPadding(dp(4), dp(6), dp(4), dp(6))
+        isClickable = true
+        setOnClickListener { onClick() }
+        val iv = ImageView(this@MainActivity).apply {
+            tag = "icon"
+            setImageResource(iconRes)
+            setColorFilter(color(MUTED))
+        }
+        val tv = TextView(this@MainActivity).apply {
+            tag = "label"
+            text = label
+            textSize = 10f
+            setTextColor(color(MUTED))
+            gravity = Gravity.CENTER
+        }
+        addView(iv, LinearLayout.LayoutParams(dp(22), dp(22)))
+        addView(tv, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { topMargin = dp(4) })
+    }
+
+    private fun styleTab(tab: LinearLayout, active: Boolean) {
+        val c = if (active) color(CYAN) else color(MUTED)
+        (tab.findViewWithTag<View>("icon") as? ImageView)?.setColorFilter(c)
+        (tab.findViewWithTag<View>("label") as? TextView)?.setTextColor(c)
+    }
+
+    private fun switchTab(idx: Int) {
+        currentTab = idx
+        renderTab()
+    }
 
     private fun renderTab() {
-        content.removeAllViews()
-        content.addView(when (activeTab) {
-            0 -> homeScreen()
+        contentHost.removeAllViews()
+        val view = when (currentTab) {
             1 -> settingsScreen()
             2 -> historyScreen()
-            else -> aboutScreen()
-        })
-        refreshNav()
+            else -> homeScreen()
+        }
+        contentHost.addView(view, LayoutParams(MATCH_PARENT, MATCH_PARENT))
+        styleTab(homeTab, currentTab == 0)
+        styleTab(settingsTab, currentTab == 1)
+        styleTab(historyTab, currentTab == 2)
+        updateStatusUi()
     }
 
-    private fun navBarView(): LinearLayout {
-        navIcons.clear()
-        navLabels.clear()
-        val bar = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            setBackgroundColor(color(NAVY))
-            setPadding(0, dp(6), 0, dp(8))
-            layoutParams = LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT)
-        }
-        val items = listOf(
-            Triple(R.drawable.ic_nav_home, "Ana Sayfa", 0),
-            Triple(R.drawable.ic_nav_settings, "Ayarlar", 1),
-            Triple(R.drawable.ic_nav_history, "Geçmiş", 2),
-            Triple(R.drawable.ic_nav_info, "Hakkında", 3)
-        )
-        for ((iconRes, label, index) in items) {
-            val icon = ImageView(this).apply { setImageResource(iconRes) }
-            val text = TextView(this).apply {
-                text = label
-                textSize = 10f
-                setPadding(0, dp(4), 0, 0)
+    private fun updateStatusUi() {
+        val running = ScreenCaptureService.running
+        val icon = centerWrap.findViewById<ImageView?>(0x4E01)
+            ?: (0 until centerWrap.childCount).mapNotNull { (centerWrap.getChildAt(it) as? FrameLayout)?.getChildAt(0) as? ImageView }.firstOrNull()
+        icon?.setImageResource(if (running) R.drawable.ic_stop else R.drawable.ic_play)
+        activeDot.visibility = if (running) View.VISIBLE else View.GONE
+        if (::contentHost.isInitialized) {
+            val statusTitle = contentHost.findViewWithTag<TextView>("status_title")
+            val statusSub = contentHost.findViewWithTag<TextView>("status_sub")
+            val statusPill = contentHost.findViewWithTag<TextView>("status_pill")
+            if (running) {
+                statusTitle?.text = "Çeviri Aktif"
+                statusSub?.text = "Oyun altyazıları algılanıyor ve Türkçeye çevriliyor"
+                statusPill?.text = "AKTİF"
+                statusPill?.setTextColor(color(INK))
+                statusPill?.background = bgRound(GREEN, 10)
+            } else {
+                statusTitle?.text = "Hazır"
+                statusSub?.text = "Altyazı çevirisini başlatmak için ortadaki butona dokun"
+                statusPill?.text = "DURDU"
+                statusPill?.setTextColor(color(TEXT))
+                statusPill?.background = bgRound("#16273D", 10, CARD_LINE)
             }
-            val item = LinearLayout(this).apply {
-                orientation = LinearLayout.VERTICAL
-                gravity = Gravity.CENTER
-                setPadding(0, dp(6), 0, dp(6))
-                isClickable = true
-                setOnClickListener {
-                    if (activeTab != index) {
-                        activeTab = index
-                        renderTab()
-                    }
-                }
-                addView(icon, LinearLayout.LayoutParams(dp(21), dp(21)))
-                addView(text)
-            }
-            navIcons.add(icon)
-            navLabels.add(text)
-            bar.addView(item, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
         }
-        return bar
-    }
-
-    private fun refreshNav() {
-        navIcons.forEachIndexed { i, icon -> icon.setColorFilter(color(if (i == activeTab) CYAN else MUTED)) }
-        navLabels.forEachIndexed { i, tv ->
-            tv.setTextColor(color(if (i == activeTab) CYAN else MUTED))
-            tv.typeface = Typeface.create(Typeface.SANS_SERIF, if (i == activeTab) Typeface.BOLD else Typeface.NORMAL)
-        }
-    }
-
-    private fun page(): LinearLayout = LinearLayout(this).apply {
-        orientation = LinearLayout.VERTICAL
-        setPadding(dp(18), dp(18), dp(18), dp(26))
-    }
-
-    private fun scroll(child: View): ScrollView = ScrollView(this).apply {
-        isFillViewport = true
-        addView(child)
     }
 
     // ---------- home ----------
 
     private fun homeScreen(): View {
         val col = page()
-        col.addView(brandRow())
-        col.addView(startCard())
-        col.addView(quickCards())
-        col.addView(space(14))
-        col.addView(statusStrip())
-        col.addView(previewCard())
+        col.addView(titleBlock("NEXORA", "Oyun altyazılarını anında Türkçeye çevir.", R.drawable.ic_translate))
+        col.addView(statusCard())
+        col.addView(quickSetupCard())
+        col.addView(tipCard())
         return scroll(col)
     }
 
-    private fun brandRow(): LinearLayout {
-        val logo = ImageView(this).apply { setImageResource(R.drawable.ic_nexora_mark) }
-        val name = TextView(this).apply {
-            text = "NEXORA"
-            textSize = 26f
-            setTextColor(color(TEXT))
-            typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD)
-            letterSpacing = 0.08f
-        }
-        val tag = TextView(this).apply {
-            text = "OYUNLARDA HER SÖZ ANLAM KAZANSIN"
-            textSize = 9f
-            setTextColor(color(MUTED))
-            letterSpacing = 0.14f
-            setPadding(0, dp(3), 0, 0)
-        }
-        val textCol = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            addView(name)
-            addView(tag)
-        }
-        return LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            setPadding(0, dp(4), 0, dp(20))
-            addView(logo, LinearLayout.LayoutParams(dp(44), dp(44)).apply { marginEnd = dp(12) })
-            addView(textCol, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
-        }
+    private fun page(): LinearLayout = LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL
+        setPadding(dp(16), dp(18), dp(16), dp(24))
     }
 
-    private fun startCard(): LinearLayout {
-        val box = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            background = GradientDrawable(
-                GradientDrawable.Orientation.LEFT_RIGHT,
-                intArrayOf(color("#2BE8F5"), color(CYAN_DEEP))
-            ).apply { cornerRadius = dp(20).toFloat() }
-            setPadding(dp(18), dp(16), dp(14), dp(16))
-            elevation = dp(6).toFloat()
-            isClickable = true
-            setOnClickListener { startWithPermissions() }
-            layoutParams = LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT)
-        }
-        val play = TextView(this).apply {
-            text = "\u25B6"
-            textSize = 20f
-            setTextColor(color(INK))
-        }
-        val labels = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            addView(TextView(this@MainActivity).apply {
-                text = "ÇEVİRİYİ BAŞLAT"
-                textSize = 19f
-                setTextColor(color(INK))
-                typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD)
-            })
-            addView(TextView(this@MainActivity).apply {
-                text = "Oyun oynarken anlık çeviri"
-                textSize = 11.5f
-                setTextColor(color("#0A3A47"))
-                setPadding(0, dp(2), 0, 0)
-            })
-        }
-        val stop = TextView(this).apply {
-            text = "Durdur"
-            textSize = 11f
-            setTextColor(color(INK))
-            background = bgRound("#D2F6FB", 10)
-            setPadding(dp(11), dp(7), dp(11), dp(7))
-            isClickable = true
-            setOnClickListener {
-                stopService(Intent(this@MainActivity, ScreenCaptureService::class.java))
-                LogStore.append(this@MainActivity, "DURUM", "Kullanıcı yakalamayı durdurdu")
-                toast("NEXORA durduruldu")
-                renderTab()
-            }
-        }
-        box.addView(play, LinearLayout.LayoutParams(dp(30), WRAP_CONTENT))
-        box.addView(labels, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
-        box.addView(stop)
-        return box
+    private fun scroll(child: View): ScrollView = ScrollView(this).apply {
+        setBackgroundColor(color(BG))
+        isFillViewport = true
+        addView(child)
     }
 
-    private fun quickCards(): LinearLayout {
-        val row = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            setPadding(0, dp(14), 0, 0)
-        }
-        row.addView(quickCard(R.drawable.ic_area_frame, "Altyazı Alanı", "Hangi bölge okunacak", 1))
-        row.addView(quickCard(R.drawable.ic_translate, "Çeviri Ayarları", "Çevrimdışı / İnternet", 1))
-        row.addView(quickCard(R.drawable.ic_monitor, "Görünüm", "Stil, boyut, konum", 1))
-        return row
+    private fun card(): LinearLayout = LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL
+        background = bgRound(CARD, 18, CARD_LINE)
+        setPadding(dp(16), dp(16), dp(16), dp(16))
+        layoutParams = LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { bottomMargin = dp(14) }
     }
 
-    private fun quickCard(iconRes: Int, title: String, sub: String, tab: Int): LinearLayout {
-        val cardView = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            gravity = Gravity.CENTER
-            background = bgRound(CARD, 18, CARD_LINE)
-            setPadding(dp(8), dp(16), dp(8), dp(16))
-            isClickable = true
-            setOnClickListener {
-                activeTab = tab
-                renderTab()
-            }
-        }
-        cardView.addView(ImageView(this).apply {
-            setImageResource(iconRes)
-            setColorFilter(color(CYAN))
-        }, LinearLayout.LayoutParams(dp(22), dp(22)))
-        cardView.addView(TextView(this).apply {
-            text = title
-            textSize = 12f
-            setTextColor(color(TEXT))
-            typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD)
-            gravity = Gravity.CENTER
-            setPadding(0, dp(9), 0, 0)
-        })
-        cardView.addView(TextView(this).apply {
-            text = sub
-            textSize = 9.5f
-            setTextColor(color(MUTED))
-            gravity = Gravity.CENTER
-            setPadding(0, dp(4), 0, 0)
-        })
-        cardView.layoutParams = LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f).apply {
-            marginEnd = dp(6)
-            marginStart = dp(6)
-        }
-        return cardView
-    }
-
-    private fun statusStrip(): LinearLayout {
+    private fun statusCard(): LinearLayout {
+        val c = card()
         val running = ScreenCaptureService.running
-        val online = prefs.getString("translation_mode", "device") == "online"
-        val cardView = card(14)
+        val pill = TextView(this).apply {
+            tag = "status_pill"
+            text = if (running) "AKTİF" else "DURDU"
+            textSize = 10.5f
+            typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD)
+            setTextColor(if (running) color(INK) else color(TEXT))
+            background = bgRound(if (running) GREEN else "#16273D", 10, if (running) null else CARD_LINE)
+            setPadding(dp(12), dp(6), dp(12), dp(6))
+        }
+        val title = TextView(this).apply {
+            tag = "status_title"
+            text = if (running) "Çeviri Aktif" else "Hazır"
+            textSize = 18f
+            setTextColor(color(TEXT))
+            typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD)
+        }
+        val sub = TextView(this).apply {
+            tag = "status_sub"
+            text = if (running) "Oyun altyazıları algılanıyor ve Türkçeye çevriliyor"
+            else "Altyazı çevirisini başlatmak için ortadaki butona dokun"
+            textSize = 12.5f
+            setTextColor(color(MUTED))
+            setPadding(0, dp(6), 0, 0)
+        }
         val row = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
+            addView(title, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
+            addView(pill)
         }
-        row.addView(statusCell(if (running) GREEN else AMBER, if (running) "Sistem Aktif" else "Hazır", if (running) "Arka planda çalışıyor" else "Çeviri motoru bekliyor"), LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
-        row.addView(View(this).apply {
-            setBackgroundColor(color("#152A42"))
-            layoutParams = LinearLayout.LayoutParams(dp(1), dp(36)).apply { marginStart = dp(10); marginEnd = dp(10) }
-        })
-        row.addView(statusCell(CYAN, if (online) "İnternet Modu" else "Çevrimdışı Mod", if (online) "Daha doğal çeviri" else "Kotasız ve kesintisiz"), LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
-        cardView.addView(row)
-        return cardView
+        c.addView(row)
+        c.addView(sub)
+        return c
     }
 
-    private fun statusCell(dot: String, title: String, sub: String): LinearLayout {
-        val dotView = View(this).apply {
-            background = bgRound(dot, 6)
-            layoutParams = LinearLayout.LayoutParams(dp(10), dp(10)).apply { marginEnd = dp(9) }
+    private fun quickSetupCard(): LinearLayout {
+        val c = card()
+        c.addView(sectionTitle("Hızlı Kurulum"))
+        c.addView(stepRow("1", "Üstte gösterme iznini aç", overlayGranted()))
+        c.addView(stepRow("2", "Bildirim iznini aç", notificationGranted()))
+        c.addView(stepRow("3", "Oyunu aç ve altyazıları göster", null))
+        c.addView(stepRow("4", "Ortadaki butona dokun", ScreenCaptureService.running))
+        if (!overlayGranted() || !notificationGranted()) {
+            c.addView(space(8))
+            c.addView(rowOf(
+                ghostButton("İzinleri ver") {
+                    if (!overlayGranted()) requestOverlayPermission() else requestNotificationPermission()
+                }
+            ))
         }
-        val col = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            addView(TextView(this@MainActivity).apply {
-                text = title
-                textSize = 12f
-                setTextColor(color(TEXT))
-                typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD)
-            })
-            addView(TextView(this@MainActivity).apply {
-                text = sub
-                textSize = 9.5f
-                setTextColor(color(MUTED))
-                setPadding(0, dp(2), 0, 0)
-            })
+        return c
+    }
+
+    private fun stepRow(n: String, text: String, ok: Boolean?): LinearLayout {
+        val dot = TextView(this).apply {
+            this.text = if (ok == true) "✓" else n
+            textSize = 11f
+            gravity = Gravity.CENTER
+            setTextColor(if (ok == true) color(INK) else color(TEXT))
+            background = bgRound(if (ok == true) GREEN else "#16273D", 12, if (ok == true) null else CARD_LINE)
         }
         return LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            addView(dotView)
-            addView(col, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
+            setPadding(0, dp(8), 0, dp(8))
+            addView(dot, LinearLayout.LayoutParams(dp(26), dp(26)).apply { marginEnd = dp(12) })
+            addView(TextView(this@MainActivity).apply {
+                this.text = text
+                textSize = 13f
+                setTextColor(if (ok == false) color(AMBER) else color(TEXT))
+            }, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
         }
     }
 
-    private fun previewCard(): LinearLayout {
-        val cardView = card()
-        cardView.addView(cardHeader(R.drawable.ic_monitor, "Gerçek Zamanlı Oyun Çevirisi", "Yabancı dildeki replikler anında Türkçeye dönüşür."))
-        val box = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            background = bgRound("#071325", 14, "#173755")
-            setPadding(dp(14), dp(16), dp(14), dp(16))
-        }
-        box.addView(TextView(this).apply {
-            text = "\"The path ahead won't be easy.\""
-            textSize = 12f
-            setTextColor(color("#9FB6CE"))
-            gravity = Gravity.CENTER
+    private fun tipCard(): LinearLayout {
+        val c = card()
+        c.addView(sectionTitle("İpucu"))
+        c.addView(TextView(this).apply {
+            text = "Çeviri görünmüyorsa Ayarlar'daki \"Alanı Ayarla\" ile kutuyu oyunun altyazı satırının tam üstüne yerleştir. Günlük'teki \"Okunan\" bölümü uygulamanın ne gördüğünü gösterir."
+            textSize = 12.5f
+            setTextColor(color(MUTED))
+            setLineSpacing(4f, 1.05f)
         })
-        box.addView(TextView(this).apply {
-            text = "\u2193"
-            textSize = 13f
-            setTextColor(color(CYAN))
-            gravity = Gravity.CENTER
-            setPadding(0, dp(5), 0, dp(5))
-        })
-        box.addView(TextView(this).apply {
-            text = "Önümüzdeki yol kolay olmayacak."
-            textSize = 13f
-            setTextColor(color(TEXT))
-            typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD)
-            gravity = Gravity.CENTER
-        })
-        cardView.addView(box)
-        return cardView
+        return c
     }
 
     // ---------- settings ----------
@@ -434,6 +470,7 @@ class MainActivity : ComponentActivity() {
         col.addView(resetChip())
         col.addView(areaCard())
         col.addView(modeCard())
+        col.addView(contextCard())
         col.addView(appearanceCard())
         col.addView(performanceCard())
         col.addView(advancedCard())
@@ -519,266 +556,197 @@ class MainActivity : ComponentActivity() {
         private var mode = 0
         private var downX = 0f
         private var downY = 0f
-        private val start = RectF()
+        private var startRect = RectF()
 
-        fun load(l: Float, t: Float, r: Float, b: Float) {
-            pending = floatArrayOf(l, t, r, b)
+        init { setWillNotDraw(false) }
+
+        fun initSelection(fr: FloatArray) { pending = fr; invalidate() }
+
+        override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
+            val f = pending
+            if (f != null) {
+                sel.set(f[0] * w, f[1] * h, f[2] * w, f[3] * h)
+            } else if (sel.isEmpty) {
+                sel.set(w * 0.06f, h * 0.62f, w * 0.94f, h * 0.94f)
+            }
         }
 
-        override fun onSizeChanged(w: Int, h: Int, ow: Int, oh: Int) {
-            val p = pending ?: floatArrayOf(0.06f, 0.62f, 0.94f, 0.94f)
-            sel.set(w * p[0], h * p[1], w * p[2], h * p[3])
-            fit()
+        override fun onDraw(c: Canvas) {
+            val w = width.toFloat(); val h = height.toFloat()
+            c.drawRect(0f, 0f, w, sel.top, dim)
+            c.drawRect(0f, sel.bottom, w, h, dim)
+            c.drawRect(0f, sel.top, sel.left, sel.bottom, dim)
+            c.drawRect(sel.right, sel.top, w, sel.bottom, dim)
+            c.drawRect(sel, border)
+            val y3 = sel.top + sel.height() / 3f
+            val y6 = sel.top + 2f * sel.height() / 3f
+            c.drawLine(sel.left, y3, sel.right, y3, grid)
+            c.drawLine(sel.left, y6, sel.right, y6, grid)
+            for ((kx, ky) in listOf(sel.left to sel.top, sel.right to sel.top, sel.left to sel.bottom, sel.right to sel.bottom)) {
+                c.drawCircle(kx, ky, dp(8).toFloat(), knob)
+            }
+            c.drawText("Altyazı alanı", sel.left + dp(8), (sel.top - dp(8)).coerceAtLeast(dp(18).toFloat()), tag)
         }
 
-        private fun minW(): Float = dp(60).toFloat()
-
-        private fun minH(): Float = dp(30).toFloat()
-
-        private fun fit() {
-            if (width <= 0 || height <= 0) return
-            if (sel.right - sel.left < minW()) sel.right = sel.left + minW()
-            if (sel.bottom - sel.top < minH()) sel.bottom = sel.top + minH()
-            if (sel.left < 0f) {
-                sel.right -= sel.left
-                sel.left = 0f
-            }
-            if (sel.top < 0f) {
-                sel.bottom -= sel.top
-                sel.top = 0f
-            }
-            if (sel.right > width) {
-                sel.left -= sel.right - width
-                sel.right = width.toFloat()
-            }
-            if (sel.bottom > height) {
-                sel.top -= sel.bottom - height
-                sel.bottom = height.toFloat()
-            }
-            if (sel.left < 0f) sel.left = 0f
-            if (sel.top < 0f) sel.top = 0f
+        private fun hitCorner(x: Float, y: Float): Int {
+            val r = dp(22).toFloat()
+            if (Math.hypot((x - sel.left).toDouble(), (y - sel.top).toDouble()) < r) return 1
+            if (Math.hypot((x - sel.right).toDouble(), (y - sel.top).toDouble()) < r) return 2
+            if (Math.hypot((x - sel.left).toDouble(), (y - sel.bottom).toDouble()) < r) return 3
+            if (Math.hypot((x - sel.right).toDouble(), (y - sel.bottom).toDouble()) < r) return 4
+            return 0
         }
 
-        private fun cornerIndex(): Int {
-            val hs = dp(40).toFloat()
-            val pts = arrayOf(
-                PointF(sel.left, sel.top), PointF(sel.right, sel.top),
-                PointF(sel.right, sel.bottom), PointF(sel.left, sel.bottom)
-            )
-            for (i in pts.indices) {
-                if (abs(downX - pts[i].x) <= hs && abs(downY - pts[i].y) <= hs) return i
-            }
-            return -1
-        }
-
-        override fun onTouchEvent(event: MotionEvent): Boolean {
-            when (event.actionMasked) {
+        override fun onTouchEvent(e: MotionEvent): Boolean {
+            when (e.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
-                    downX = event.x
-                    downY = event.y
-                    start.set(sel)
-                    val c = cornerIndex()
+                    downX = e.rawX; downY = e.rawY; startRect.set(sel)
+                    val c = hitCorner(e.rawX, e.rawY)
                     mode = when {
-                        c >= 0 -> c + 2
-                        sel.contains(event.x, event.y) -> 1
-                        else -> 0
+                        c != 0 -> c
+                        sel.contains(e.rawX, e.rawY) -> 5
+                        else -> 6
                     }
-                    if (mode == 0) {
-                        sel.set(event.x, event.y, event.x + dp(140), event.y + dp(70))
-                        fit()
-                        start.set(sel)
-                        mode = 4
+                    if (mode == 6) {
+                        sel.set(e.rawX, e.rawY, e.rawX, e.rawY)
                     }
                     invalidate()
+                    return true
                 }
                 MotionEvent.ACTION_MOVE -> {
-                    val dx = event.x - downX
-                    val dy = event.y - downY
+                    val dx = e.rawX - downX
+                    val dy = e.rawY - downY
+                    val minW = dp(80).toFloat()
+                    val minH = dp(40).toFloat()
                     when (mode) {
-                        1 -> {
-                            sel.set(start)
-                            sel.offset(dx, dy)
-                            if (sel.left < 0f) sel.offset(-sel.left, 0f)
-                            if (sel.top < 0f) sel.offset(0f, -sel.top)
-                            if (sel.right > width) sel.offset(width - sel.right, 0f)
-                            if (sel.bottom > height) sel.offset(0f, height - sel.bottom)
-                        }
-                        2 -> {
-                            sel.set(start)
-                            sel.left = (start.left + dx).coerceAtMost(sel.right - minW())
-                            sel.top = (start.top + dy).coerceAtMost(sel.bottom - minH())
-                            fit()
-                        }
-                        3 -> {
-                            sel.set(start)
-                            sel.right = (start.right + dx).coerceAtLeast(sel.left + minW())
-                            sel.top = (start.top + dy).coerceAtMost(sel.bottom - minH())
-                            fit()
-                        }
-                        4 -> {
-                            sel.set(start)
-                            sel.right = (start.right + dx).coerceAtLeast(sel.left + minW())
-                            sel.bottom = (start.bottom + dy).coerceAtLeast(sel.top + minH())
-                            fit()
-                        }
+                        1 -> { sel.left = (startRect.left + dx).coerceIn(0f, sel.right - minW); sel.top = (startRect.top + dy).coerceIn(0f, sel.bottom - minH) }
+                        2 -> { sel.right = (startRect.right + dx).coerceIn(sel.left + minW, width.toFloat()); sel.top = (startRect.top + dy).coerceIn(0f, sel.bottom - minH) }
+                        3 -> { sel.left = (startRect.left + dx).coerceIn(0f, sel.right - minW); sel.bottom = (startRect.bottom + dy).coerceIn(sel.top + minH, height.toFloat()) }
+                        4 -> { sel.right = (startRect.right + dx).coerceIn(sel.left + minW, width.toFloat()); sel.bottom = (startRect.bottom + dy).coerceIn(sel.top + minH, height.toFloat()) }
                         5 -> {
-                            sel.set(start)
-                            sel.left = (start.left + dx).coerceAtMost(sel.right - minW())
-                            sel.bottom = (start.bottom + dy).coerceAtLeast(sel.top + minH())
-                            fit()
+                            val w = startRect.width(); val h = startRect.height()
+                            sel.left = (startRect.left + dx).coerceIn(0f, width - w)
+                            sel.top = (startRect.top + dy).coerceIn(0f, height - h)
+                            sel.right = sel.left + w; sel.bottom = sel.top + h
                         }
+                        6 -> { sel.right = e.rawX; sel.bottom = e.rawY }
+                    }
+                    if (mode == 6) {
+                        // keep rect normalized while drawing
                     }
                     invalidate()
+                    return true
                 }
-                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> mode = 0
+                MotionEvent.ACTION_UP -> {
+                    if (mode == 6) {
+                        sel.set(min(downX, e.rawX), min(downY, e.rawY), max(downX, e.rawX), max(downY, e.rawY))
+                    }
+                    sel.sort()
+                    sel.left = sel.left.coerceIn(0f, width - dp(40).toFloat())
+                    sel.top = sel.top.coerceIn(0f, height - dp(30).toFloat())
+                    sel.right = sel.right.coerceIn(sel.left + dp(80).toFloat(), width.toFloat())
+                    sel.bottom = sel.bottom.coerceIn(sel.top + dp(40).toFloat(), height.toFloat())
+                    invalidate()
+                    return true
+                }
             }
-            return true
-        }
-
-        override fun onDraw(canvas: Canvas) {
-            super.onDraw(canvas)
-            val w = width.toFloat()
-            val h = height.toFloat()
-            canvas.drawRect(0f, 0f, w, sel.top, dim)
-            canvas.drawRect(0f, sel.bottom, w, h, dim)
-            canvas.drawRect(0f, sel.top, sel.left, sel.bottom, dim)
-            canvas.drawRect(sel.right, sel.top, w, sel.bottom, dim)
-            canvas.drawRect(sel, border)
-            val mx = sel.centerX()
-            val my = sel.centerY()
-            canvas.drawLine(sel.left, my, sel.right, my, grid)
-            canvas.drawLine(mx, sel.top, mx, sel.bottom, grid)
-            val r = dp(8).toFloat()
-            canvas.drawCircle(sel.left, sel.top, r, knob)
-            canvas.drawCircle(sel.right, sel.top, r, knob)
-            canvas.drawCircle(sel.right, sel.bottom, r, knob)
-            canvas.drawCircle(sel.left, sel.bottom, r, knob)
-            canvas.drawText("ALTYAZI ALANI", sel.left + dp(8), sel.top + dp(16), tag)
+            return super.onTouchEvent(e)
         }
     }
 
     private fun areaStatusText(): String {
-        val region = prefs.getString("region", "bottom") ?: "bottom"
-        return when (region) {
-            "custom" -> "Özel alan: yatay %" + (prefs.getFloat("region_l", 0.06f) * 100).toInt() +
-                "–%" + (prefs.getFloat("region_r", 0.94f) * 100).toInt() +
-                ", dikey %" + (prefs.getFloat("region_t", 0.62f) * 100).toInt() +
-                "–%" + (prefs.getFloat("region_b", 0.94f) * 100).toInt()
-            "top" -> "Hazır alan: üst bölge"
-            "middle" -> "Hazır alan: orta bölge"
-            "full" -> "Hazır alan: tam ekran"
-            else -> "Hazır alan: alt bölge"
+        val p = prefs.getString("position", "bottom") ?: "bottom"
+        return when (p) {
+            "custom", "ozel" -> "Seçili: Özel alan"
+            "top" -> "Seçili: Üst"
+            "middle", "center", "orta" -> "Seçili: Orta"
+            "full" -> "Seçili: Tam ekran"
+            else -> "Seçili: Alt"
         }
     }
 
     private fun showRegionPicker() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && !Settings.canDrawOverlays(this)) {
-            toast("Önce ekran üstünde gösterim iznini ver")
-            try {
-                startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:" + packageName)))
-            } catch (_: Exception) {
-            }
-            return
-        }
+        if (!overlayGranted()) { requestOverlayPermission(); return }
         hideRegionPicker()
-        val wm = applicationContext.getSystemService(Context.WINDOW_SERVICE) as WindowManager
-        val picker = RegionPickerView(this).apply {
-            load(
-                prefs.getFloat("region_l", 0.06f),
-                prefs.getFloat("region_t", 0.62f),
-                prefs.getFloat("region_r", 0.94f),
-                prefs.getFloat("region_b", 0.94f)
-            )
+        val wm = getSystemService(Context.WINDOW_SERVICE) as WindowManager
+        pickerWm = wm
+        val root = FrameLayout(this)
+        val picker = RegionPickerView(this)
+        val p = prefs.getString("position", "bottom") ?: "bottom"
+        val fr = if (p == "custom" || p == "ozel") {
+            floatArrayOf(prefs.getFloat("region_l", 0.06f), prefs.getFloat("region_t", 0.62f), prefs.getFloat("region_r", 0.94f), prefs.getFloat("region_b", 0.94f))
+        } else {
+            when (p) {
+                "top" -> floatArrayOf(0.05f, 0.03f, 0.95f, 0.28f)
+                "middle", "center", "orta" -> floatArrayOf(0.05f, 0.32f, 0.95f, 0.68f)
+                "full" -> floatArrayOf(0.02f, 0.02f, 0.98f, 0.98f)
+                else -> floatArrayOf(0.06f, 0.62f, 0.94f, 0.94f)
+            }
         }
+        picker.initSelection(fr)
+        root.addView(picker, LayoutParams(MATCH_PARENT, MATCH_PARENT))
         val bar = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            background = bgRound("#F20A1526", 16, CARD_LINE)
-            setPadding(dp(14), dp(12), dp(14), dp(12))
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER
+            background = bgRound("#D90A1628", 16, CARD_LINE)
+            setPadding(dp(10), dp(8), dp(10), dp(8))
         }
-        bar.addView(TextView(this).apply {
-            text = "Kutuyu parmağınla taşı, köşelerinden büyüt. Oyununa geç, altyazının üstüne getir ve Kaydet'e bas."
-            textSize = 11.5f
+        bar.addView(ghostButton("Kaydet") {
+            val w = max(1, picker.width).toFloat()
+            val h = max(1, picker.height).toFloat()
+            val l = (picker.sel.left / w).coerceIn(0.0f, 0.96f)
+            val t = (picker.sel.top / h).coerceIn(0.0f, 0.96f)
+            val r = (picker.sel.right / w).coerceIn(l + 0.04f, 1.0f)
+            val b = (picker.sel.bottom / h).coerceIn(t + 0.03f, 1.0f)
+            prefs.edit()
+                .putString("position", "custom")
+                .putString("region", "custom")
+                .putFloat("region_l", l).putFloat("region_t", t)
+                .putFloat("region_r", r).putFloat("region_b", b)
+                .apply()
+            LogStore.append(this@MainActivity, "AYAR", "Özel altyazı alanı: x " +
+                "${(l*100).toInt()}-${(r*100).toInt()}%, y ${(t*100).toInt()}-${(b*100).toInt()}%")
+            hideRegionPicker()
+            toast("Altyazı alanı kaydedildi")
+            renderTab()
+        }, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f).apply { marginEnd = dp(8) })
+        bar.addView(ghostButton("İptal") { hideRegionPicker() }, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
+        val hint = TextView(this).apply {
+            text = "Kutuyu sürükle, köşelerden boyutlandır. Altyazının olduğu yeri seç."
+            textSize = 11f
             setTextColor(color(TEXT))
-        })
-        bar.addView(space(8))
-        bar.addView(rowOf(
-            ghostButton("Kaydet") {
-                val w = if (picker.width > 0) picker.width else resources.displayMetrics.widthPixels
-                val h = if (picker.height > 0) picker.height else resources.displayMetrics.heightPixels
-                val l = (picker.sel.left / w).coerceIn(0f, 0.96f)
-                val t = (picker.sel.top / h).coerceIn(0f, 0.96f)
-                var r = (picker.sel.right / w).coerceIn(0.03f, 1f)
-                var b = (picker.sel.bottom / h).coerceIn(0.03f, 1f)
-                if (r < l + 0.02f) r = (l + 0.02f).coerceAtMost(1f)
-                if (b < t + 0.02f) b = (t + 0.02f).coerceAtMost(1f)
-                prefs.edit()
-                    .putFloat("region_l", l)
-                    .putFloat("region_t", t)
-                    .putFloat("region_r", r)
-                    .putFloat("region_b", b)
-                    .putString("region", "custom")
-                    .putString("position", "custom")
-                    .apply()
-                LogStore.append(this@MainActivity, "AYAR", "Özel altyazı alanı: x " +
-                    (l * 100).toInt() + "-" + (r * 100).toInt() + ", y " +
-                    (t * 100).toInt() + "-" + (b * 100).toInt())
-                hideRegionPicker()
-                toast("Alan kaydedildi")
-                renderTab()
-            },
-            ghostButton("İptal") { hideRegionPicker() }
-        ))
-        val root = FrameLayout(this).apply {
-            addView(picker, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
-            addView(bar, FrameLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT, Gravity.TOP).apply {
-                topMargin = dp(28)
-                leftMargin = dp(14)
-                rightMargin = dp(14)
-            })
+            gravity = Gravity.CENTER
+            setPadding(dp(12), dp(8), dp(12), dp(8))
+            background = bgRound("#CC0A1628", 12, CARD_LINE)
         }
-        val type = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
-            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
-        else
-            WindowManager.LayoutParams.TYPE_PHONE
-        val params = WindowManager.LayoutParams(
-            MATCH_PARENT,
-            MATCH_PARENT,
-            type,
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or
-                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
-            PixelFormat.TRANSLUCENT
-        )
-        params.gravity = Gravity.TOP or Gravity.START
-        try {
-            wm.addView(root, params)
-            pickerRoot = root
-            pickerWm = wm
-            toast("Seçici açık — oyununa geçip kutuyu altyazının üstüne getir")
-        } catch (e: Exception) {
-            toast("Seçici açılamadı: " + (e.localizedMessage ?: "izin yok"))
+        root.addView(hint, LayoutParams(WRAP_CONTENT, WRAP_CONTENT, Gravity.TOP or Gravity.CENTER_HORIZONTAL).apply { topMargin = dp(36) })
+        root.addView(bar, LayoutParams(MATCH_PARENT, WRAP_CONTENT, Gravity.BOTTOM).apply { bottomMargin = dp(28); leftMargin = dp(18); rightMargin = dp(18) })
+        pickerRoot = root
+        val type = if (Build.VERSION.SDK_INT >= 26) WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY else @Suppress("DEPRECATION") WindowManager.LayoutParams.TYPE_PHONE
+        val lp = WindowManager.LayoutParams(MATCH_PARENT, MATCH_PARENT, type,
+            WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+            PixelFormat.TRANSLUCENT)
+        try { wm.addView(root, lp) } catch (e: Exception) {
+            pickerRoot = null
+            toast("Alan seçici açılamadı")
         }
     }
 
     private fun hideRegionPicker() {
-        val v = pickerRoot ?: return
+        try { pickerRoot?.let { pickerWm?.removeView(it) } } catch (_: Exception) {}
         pickerRoot = null
-        try {
-            pickerWm?.removeView(v)
-        } catch (_: Exception) {
-        }
         pickerWm = null
     }
 
     private fun areaCard(): LinearLayout {
         val cardView = card()
-        cardView.addView(cardHeader(R.drawable.ic_area_frame, "Altyazı Alanı (OCR Bölgesi)", "Oyun ekranında altyazıların bulunduğu alanı seç."))
+        cardView.addView(cardHeader(R.drawable.ic_crop, "Altyazı Alanı", "Oyundaki altyazı konumunu seç."))
         val frameBox = FrameLayout(this).apply {
-            background = bgRound("#071325", 14, "#16344E")
+            background = bgRound("#071325", 12, CARD_LINE)
         }
         frameBox.addView(View(this).apply {
             background = bgRound("#00000000", 10, CYAN)
-        }, FrameLayout.LayoutParams(MATCH_PARENT, dp(56), Gravity.CENTER).apply {
+        }, LayoutParams(MATCH_PARENT, dp(56), Gravity.CENTER).apply {
             leftMargin = dp(14)
             rightMargin = dp(14)
         })
@@ -788,7 +756,7 @@ class MainActivity : ComponentActivity() {
             setTextColor(color(TEXT))
             background = bgRound("#04121C", 8, "#1E5C71")
             setPadding(dp(10), dp(6), dp(10), dp(6))
-        }, FrameLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT, Gravity.CENTER))
+        }, LayoutParams(WRAP_CONTENT, WRAP_CONTENT, Gravity.CENTER))
         cardView.addView(frameBox, LinearLayout.LayoutParams(MATCH_PARENT, dp(112)).apply { bottomMargin = dp(12) })
         cardView.addView(TextView(this).apply {
             text = areaStatusText()
@@ -817,85 +785,85 @@ class MainActivity : ComponentActivity() {
         cardView.addView(cardHeader(R.drawable.ic_translate, "Çeviri Modu", "İhtiyacına en uygun çeviri modunu seç."))
         val current = prefs.getString("translation_mode", "device")
         val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        row.addView(modeOption(
-            "Çevrimdışı",
-            "Kotasız, internet gerektirmez. Cihazdaki model ile hızlı çeviri.",
-            true,
-            current != "online"
-        ) {
-            prefs.edit().putString("translation_mode", "device").apply()
-            toast("Çevrimdışı mod")
-            renderTab()
-        }, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f).apply { marginEnd = dp(8) })
-        row.addView(modeOption(
-            "AI Destekli",
-            "Daha doğal çeviri. İnternet üzerinden çevirir, bağlantı yoksa çevrimdışına döner.",
-            false,
-            current == "online"
-        ) {
-            prefs.edit().putString("translation_mode", "online").apply()
-            toast("İnternet çevirisi")
-            renderTab()
-        }, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
+        val opts = listOf("Cihazda" to "device", "İnternet" to "online")
+        for ((label, value) in opts) {
+            val active = current == value
+            row.addView(TextView(this).apply {
+                text = label
+                textSize = 12.5f
+                gravity = Gravity.CENTER
+                typeface = Typeface.create(Typeface.SANS_SERIF, if (active) Typeface.BOLD else Typeface.NORMAL)
+                setTextColor(if (active) color(INK) else color(TEXT))
+                background = bgRound(if (active) CYAN else "#16273D", 12, if (active) null else CARD_LINE)
+                setPadding(dp(10), dp(12), dp(10), dp(12))
+                isClickable = true
+                setOnClickListener {
+                    prefs.edit().putString("translation_mode", value).apply()
+                    if (value == "device") ensureModel(false)
+                    toast(if (value == "online") "İnternet çevirisi" else "Cihaz içi çeviri")
+                    renderTab()
+                }
+            }, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f).apply { rightMargin = dp(8) })
+        }
         cardView.addView(row)
+        cardView.addView(TextView(this).apply {
+            text = "Cihazda: internet gerekmez, model indirilmeli. İnternet: daha güncel çeviri, bağlantı gerekir."
+            textSize = 11f
+            setTextColor(color(MUTED))
+            setPadding(0, dp(8), 0, 0)
+        })
         return cardView
     }
 
-    private fun modeOption(title: String, sub: String, recommended: Boolean, selected: Boolean, onClick: () -> Unit): LinearLayout {
-        val box = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            background = if (selected) bgRound("#0C2036", 14, CYAN) else bgRound(CARD, 14, CARD_LINE)
-            setPadding(dp(12), dp(12), dp(12), dp(12))
-            isClickable = true
-            setOnClickListener { onClick() }
-        }
-        val head = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-        }
-        head.addView(TextView(this@MainActivity).apply {
-            text = if (selected) "\u25CF" else "\u25CB"
-            textSize = 13f
-            setTextColor(color(if (selected) CYAN else MUTED))
-            setPadding(0, 0, dp(7), 0)
+    private fun contextCard(): LinearLayout {
+        val cardView = card()
+        cardView.addView(cardHeader(R.drawable.ic_translate, "Bağlam ve Sözlük", "Konuşmayı hatırla ve adları/terimleri doğru tut."))
+        cardView.addView(toggleRow("Önceki cümleleri hatırla (daha tutarlı çeviri)", "context_memory", true))
+        cardView.addView(toggleRow("Yeni satırı kısa süre sabitle (titremeyi azalt)", "stabilize", true))
+        cardView.addView(space(8))
+        cardView.addView(TextView(this).apply {
+            text = "Korunacak adlar ve terimler (her satıra bir tane). Çeviride olduğu gibi bırakılır, örn. karakter adları."
+            textSize = 11f
+            setTextColor(color(MUTED))
+            setLineSpacing(2f, 1.05f)
         })
-        head.addView(TextView(this@MainActivity).apply {
-            text = title
+        val keep = EditText(this).apply {
+            setText(prefs.getString("glossary_keep", "") ?: "")
+            hint = "Medusa\nBoobie\nLos Santos"
+            minLines = 3
+            maxLines = 6
+            gravity = Gravity.TOP or Gravity.START
             textSize = 13f
             setTextColor(color(TEXT))
-            typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD)
-        }, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
-        if (recommended) {
-            head.addView(TextView(this@MainActivity).apply {
-                text = "Önerilen"
-                textSize = 9f
-                setTextColor(color(INK))
-                background = bgRound(GREEN, 8)
-                setPadding(dp(7), dp(3), dp(7), dp(3))
-            })
+            setHintTextColor(color(MUTED))
+            background = bgRound("#071325", 10, CARD_LINE)
+            setPadding(dp(12), dp(10), dp(12), dp(10))
         }
-        box.addView(head)
-        box.addView(TextView(this).apply {
-            text = sub
-            textSize = 10.5f
-            setTextColor(color(MUTED))
-            setLineSpacing(dp(2).toFloat(), 1f)
-            setPadding(0, dp(6), 0, 0)
-        })
-        return box
+        cardView.addView(keep, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = dp(8); bottomMargin = dp(8) })
+        cardView.addView(rowOf(
+            ghostButton("Sözlüğü kaydet") {
+                prefs.edit().putString("glossary_keep", keep.text?.toString() ?: "").apply()
+                toast("Sözlük kaydedildi")
+            },
+            ghostButton("Temizle") {
+                keep.setText("")
+                prefs.edit().putString("glossary_keep", "").apply()
+                toast("Sözlük temizlendi")
+            }
+        ))
+        return cardView
     }
 
     private fun appearanceCard(): LinearLayout {
         val cardView = card()
-        cardView.addView(cardHeader(R.drawable.ic_monitor, "Altyazı Görünümü", "Ekrandaki çeviri altyazısını özelleştir."))
+        cardView.addView(cardHeader(R.drawable.ic_subtitle, "Görünüm", "Altyazı kutusunun görünümünü ayarla."))
+
         val preview = TextView(this).apply {
-            text = "Bu oyunun dünyası\nartık daha anlaşılır."
-            typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD)
+            text = "Altyazı örneği burada görünür"
             gravity = Gravity.CENTER
-            textAlignment = View.TEXT_ALIGNMENT_CENTER
         }
         fun refreshPreview() {
-            val size = prefs.getFloat("text_size_sp", 22f)
+            val size = prefs.getFloat("text_size_sp", 22f).coerceIn(14f, 40f)
             val opacity = prefs.getInt("bg_opacity", 88).coerceIn(0, 100)
             val strokeWidth = prefs.getInt("stroke_width_dp", 1).coerceIn(0, 6)
             preview.textSize = (size * 0.6f).coerceIn(8f, 22f)
@@ -943,7 +911,7 @@ class MainActivity : ComponentActivity() {
             background = bgRound("#071325", 12, "#16344E")
             setPadding(dp(8), dp(8), dp(8), dp(8))
         }
-        previewBox.addView(preview, FrameLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT, Gravity.CENTER))
+        previewBox.addView(preview, LayoutParams(MATCH_PARENT, WRAP_CONTENT, Gravity.CENTER))
 
         val previewCol = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -1017,72 +985,69 @@ class MainActivity : ComponentActivity() {
         val cardView = card()
         cardView.addView(cardHeader(R.drawable.ic_sliders, "Performans", "Cihazına uygun performans ayarlarını yap."))
         cardView.addView(sliderRow(
-            "OCR Sıklığı",
-            500,
-            prefs.getInt("ocr_interval_ms", 250) - 100,
-            { "${it + 100} ms" }
-        ) { prefs.edit().putInt("ocr_interval_ms", it + 100).apply() })
+            "Tarama Aralığı",
+            1400,
+            (prefs.getInt("capture_interval_ms", 350) - 100).coerceIn(0, 1400),
+            { "${100 + it} ms" }
+        ) { prefs.edit().putInt("capture_interval_ms", 100 + it).apply() })
         cardView.addView(sliderRow(
-            "Kararlılık Süresi",
-            5000,
-            prefs.getInt("clear_ms", 2800) - 1000,
-            { "${it + 1000} ms" }
-        ) { prefs.edit().putInt("clear_ms", it + 1000).apply() })
+            "Okuma Kalitesi",
+            50,
+            (prefs.getInt("capture_scale", 100) - 50).coerceIn(0, 50),
+            { "${50 + it}%" }
+        ) { prefs.edit().putInt("capture_scale", 50 + it).apply() })
         cardView.addView(sliderRow(
-            "Maks. Çeviri Uzunluğu",
-            400,
-            prefs.getInt("max_chars", 250) - 100,
-            { "${it + 100} karakter" }
-        ) { prefs.edit().putInt("max_chars", it + 100).apply() })
+            "Ekranda Kalma",
+            5200,
+            (prefs.getInt("clear_ms", 2800) - 800).coerceIn(0, 5200),
+            { "${(800 + it) / 1000.0}".take(3) + " sn" }
+        ) { prefs.edit().putInt("clear_ms", 800 + it).apply() })
         return cardView
     }
 
     private fun advancedCard(): LinearLayout {
         val cardView = card()
-        cardView.addView(cardHeader(R.drawable.ic_tune, "Gelişmiş", "İleri düzey ayarlar."))
-        cardView.addView(toggleRow("Oyun Arayüzü Metinlerini Filtrele", "hud_filter", true))
-        cardView.addView(toggleRow("Tekrarlayan Metinleri Birleştir", "merge_repeat", true))
-        cardView.addView(toggleRow("Yüksek Çözünürlüklü OCR", "ocr_hires", true))
-        cardView.addView(toggleRow("OCR Atlama Kayıtları (teşhis)", "debug_log", false))
+        cardView.addView(cardHeader(R.drawable.ic_tune, "Gelişmiş", "Ek ayarlar ve ince ayarlar."))
+        cardView.addView(toggleRow("HUD/metin gürültüsünü filtrele", "hud_filter", true))
+        cardView.addView(toggleRow("Aynı satırı tekrar çevirme", "merge_repeat", true))
+        cardView.addView(toggleRow("Yüksek çözünürlükle oku", "ocr_hires", true))
+        cardView.addView(toggleRow("Ayrıntılı günlük tut", "debug_log", false))
         return cardView
     }
 
     private fun modelCard(): LinearLayout {
         val cardView = card()
-        cardView.addView(cardHeader(R.drawable.ic_translate, "Dil Paketi", "İngilizce → Türkçe çeviri modeli."))
-        val state = TextView(this).apply {
-            text = "Durum kontrol ediliyor…"
-            textSize = 12f
-            setTextColor(color(TEXT))
-            setLineSpacing(dp(2).toFloat(), 1f)
+        cardView.addView(cardHeader(R.drawable.ic_download, "Çeviri Paketi", "Cihaz içi çeviri için dil paketini yönet."))
+        cardView.addView(TextView(this).apply {
+            text = "İngilizce → Türkçe çeviri paketi cihazda çalışır; internet gerekmez. İlk kullanımda indirilmesi gerekir."
+            textSize = 11.5f
+            setTextColor(color(MUTED))
+            setLineSpacing(3f, 1.05f)
             setPadding(0, 0, 0, dp(10))
-        }
-        modelView = state
-        cardView.addView(state)
+        })
         cardView.addView(rowOf(
             ghostButton("Paketi indir") { downloadModel() },
             ghostButton("Paketi sil") { deleteModel() }
         ))
-        refreshModelState()
         return cardView
     }
 
     private fun voiceCard(): LinearLayout {
         val cardView = card()
-        cardView.addView(cardHeader(R.drawable.ic_monitor, "Seslendirme", "Çevrilen altyazı sesli okunsun."))
-        cardView.addView(toggleRow("Seslendirmeyi aç", "tts_enabled", false))
-        cardView.addView(TextView(this).apply {
-            text = "Konuşma hızı"
-            textSize = 11.5f
-            setTextColor(color(MUTED))
-            setPadding(0, dp(2), 0, dp(6))
-        })
+        cardView.addView(cardHeader(R.drawable.ic_sound, "Sesli Okuma", "Çeviriyi sesli dinle (isteğe bağlı)."))
+        cardView.addView(toggleRow("Çeviriyi sesli oku", "tts_enabled", false))
         val rate = prefs.getFloat("tts_rate", 1.0f)
         val rateIndex = when {
-            rate < 0.95f -> 0
-            rate > 1.05f -> 2
+            rate < 0.93f -> 0
+            rate > 1.07f -> 2
             else -> 1
         }
+        cardView.addView(TextView(this).apply {
+            text = "Hız"
+            textSize = 11.5f
+            setTextColor(color(MUTED))
+            setPadding(0, dp(8), 0, dp(6))
+        })
         cardView.addView(chipRow(listOf("Yavaş", "Normal", "Hızlı"), rateIndex) { i ->
             prefs.edit().putFloat("tts_rate", listOf(0.85f, 1.0f, 1.15f)[i]).apply()
             toast("Hız: ${listOf("Yavaş", "Normal", "Hızlı")[i]}")
@@ -1162,80 +1127,28 @@ class MainActivity : ComponentActivity() {
         layoutParams = LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { bottomMargin = dp(10) }
         addView(TextView(this@MainActivity).apply {
             text = en
-            textSize = 11.5f
+            textSize = 11f
             setTextColor(color(MUTED))
-            setLineSpacing(dp(2).toFloat(), 1f)
+            setLineSpacing(2f, 1.05f)
         })
         addView(TextView(this@MainActivity).apply {
-            text = tr
+            text = tr.ifBlank { "…" }
             textSize = 13.5f
             setTextColor(color(TEXT))
-            setPadding(0, dp(5), 0, 0)
+            setPadding(0, dp(6), 0, 0)
+            setLineSpacing(2f, 1.05f)
         })
     }
 
-    private fun emptyNote(text: String): TextView = TextView(this).apply {
+    // ---------- components ----------
+
+    private fun sectionTitle(text: String): TextView = TextView(this).apply {
         this.text = text
         textSize = 12.5f
-        setTextColor(color(MUTED))
-        setLineSpacing(dp(3).toFloat(), 1f)
-        background = bgRound(CARD, 14, CARD_LINE)
-        setPadding(dp(14), dp(16), dp(14), dp(16))
-    }
-
-    // ---------- about ----------
-
-    private fun aboutScreen(): View {
-        val col = page()
-        col.addView(titleBlock("Hakkında", "NEXORA — oyunlar kendi dilinde.", R.drawable.ic_nav_info))
-        val logo = ImageView(this).apply { setImageResource(R.drawable.ic_nexora_mark) }
-        col.addView(LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            setPadding(0, dp(4), 0, dp(16))
-            addView(logo, LinearLayout.LayoutParams(dp(56), dp(56)).apply { marginEnd = dp(14) })
-            addView(LinearLayout(this@MainActivity).apply {
-                orientation = LinearLayout.VERTICAL
-                addView(TextView(this@MainActivity).apply {
-                    text = "NEXORA"
-                    textSize = 22f
-                    setTextColor(color(TEXT))
-                    typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD)
-                    letterSpacing = 0.08f
-                })
-                addView(TextView(this@MainActivity).apply {
-                    text = "Sürüm 0.8.0"
-                    textSize = 11.5f
-                    setTextColor(color(MUTED))
-                    setPadding(0, dp(3), 0, 0)
-                })
-            }, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
-        })
-        val info = card()
-        info.addView(bodyText("NEXORA, ekrandaki İngilizce altyazıları okur ve Türkçeye çevirir. Çeviri tamamen cihaz üzerinde yapılabilir; internet modunu seçersen metin çeviri servisine gönderilir."))
-        info.addView(space(10))
-        info.addView(bodyText("• Sansür uygulanmaz: kaynak metin neyse o çevrilir.\n• Oyun arayüzü metinleri filtrelenir.\n• Altyazı konumu, boyutu, rengi ve opaklığı ayarlanabilir."))
-        col.addView(info)
-        val privacy = card()
-        privacy.addView(bodyText("Çevrimdışı modda altyazı metni cihazdan çıkmaz. İnternet modunda yalnızca altyazı metni MyMemory servisine gönderilir; hesap gerekmez."))
-        col.addView(privacy)
-        return scroll(col)
-    }
-
-    private fun bodyText(t: String): TextView = TextView(this).apply {
-        text = t
-        textSize = 12.5f
-        setTextColor(color("#C5D6E8"))
-        setLineSpacing(dp(3).toFloat(), 1f)
-    }
-
-    // ---------- reusable widgets ----------
-
-    private fun card(padding: Int = 16): LinearLayout = LinearLayout(this).apply {
-        orientation = LinearLayout.VERTICAL
-        background = bgRound(CARD, 20, CARD_LINE)
-        setPadding(dp(padding), dp(padding), dp(padding), dp(padding))
-        layoutParams = LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { bottomMargin = dp(12) }
+        setTextColor(color(CYAN))
+        typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD)
+        letterSpacing = 0.02f
+        setPadding(0, 0, 0, dp(10))
     }
 
     private fun cardHeader(iconRes: Int, title: String, sub: String): LinearLayout {
@@ -1247,7 +1160,7 @@ class MainActivity : ComponentActivity() {
             orientation = LinearLayout.VERTICAL
             addView(TextView(this@MainActivity).apply {
                 text = title
-                textSize = 15f
+                textSize = 14.5f
                 setTextColor(color(TEXT))
                 typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD)
             })
@@ -1255,350 +1168,216 @@ class MainActivity : ComponentActivity() {
                 text = sub
                 textSize = 11f
                 setTextColor(color(MUTED))
-                setLineSpacing(dp(2).toFloat(), 1f)
                 setPadding(0, dp(3), 0, 0)
             })
         }
         return LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.TOP
-            setPadding(0, 0, 0, dp(14))
-            addView(icon, LinearLayout.LayoutParams(dp(20), dp(20)).apply { topMargin = dp(3); marginEnd = dp(10) })
-            addView(col, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(0, 0, 0, dp(12))
+            addView(icon, LinearLayout.LayoutParams(dp(22), dp(22)).apply { marginEnd = dp(10) })
+            addView(col)
         }
     }
 
-    private fun sliderRow(label: String, maxValue: Int, value: Int, valueText: (Int) -> String, onChange: (Int) -> Unit): LinearLayout {
-        val safeValue = value.coerceIn(0, maxValue)
-        val valueLabel = TextView(this).apply {
-            text = valueText(safeValue)
-            textSize = 12f
+    private fun space(h: Int): View = View(this).apply { layoutParams = LinearLayout.LayoutParams(MATCH_PARENT, dp(h)) }
+
+    private fun rowOf(vararg views: View): LinearLayout = LinearLayout(this).apply {
+        orientation = LinearLayout.HORIZONTAL
+        for ((i, v) in views.withIndex()) {
+            addView(v, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f).apply {
+                if (i < views.lastIndex) marginEnd = dp(8)
+            })
+        }
+    }
+
+    private fun ghostButton(text: String, onClick: () -> Unit): TextView = TextView(this).apply {
+        this.text = text
+        textSize = 12.5f
+        gravity = Gravity.CENTER
+        setTextColor(color(TEXT))
+        background = bgRound("#16273D", 11, CARD_LINE)
+        setPadding(dp(8), dp(11), dp(8), dp(11))
+        isClickable = true
+        setOnClickListener { onClick() }
+    }
+
+    private fun sliderRow(title: String, max: Int, progress: Int, label: (Int) -> String, onChange: (Int) -> Unit): LinearLayout {
+        val valView = TextView(this).apply {
+            text = label(progress)
+            textSize = 10.5f
             setTextColor(color(CYAN))
             typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD)
-        }
-        val top = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            addView(TextView(this@MainActivity).apply {
-                text = label
-                textSize = 12.5f
-                setTextColor(color(TEXT))
-            }, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
-            addView(valueLabel)
+            gravity = Gravity.END
         }
         val seek = SeekBar(this).apply {
-            this.max = maxValue
-            progress = safeValue
-            progressTintList = ColorStateList.valueOf(color(CYAN))
-            thumbTintList = ColorStateList.valueOf(color(TEXT))
-            progressBackgroundTintList = ColorStateList.valueOf(color("#16263C"))
+            this.max = max
+            this.progress = progress
             setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
-                override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
-                    valueLabel.text = valueText(progress)
-                    onChange(progress)
-                }
-
-                override fun onStartTrackingTouch(seekBar: SeekBar?) {}
-
-                override fun onStopTrackingTouch(seekBar: SeekBar?) {}
+                override fun onProgressChanged(sb: SeekBar?, p: Int, fromUser: Boolean) { valView.text = label(p); if (fromUser) onChange(p) }
+                override fun onStartTrackingTouch(sb: SeekBar?) {}
+                override fun onStopTrackingTouch(sb: SeekBar?) {}
             })
         }
-        val row = LinearLayout(this).apply {
+        val head = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            addView(TextView(this@MainActivity).apply {
+                text = title; textSize = 11.5f; setTextColor(color(MUTED))
+            }, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
+            addView(valView)
+        }
+        return LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(0, 0, 0, dp(4))
+            setPadding(0, dp(8), 0, dp(8))
+            addView(head)
+            addView(seek, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = dp(2) })
         }
-        row.addView(top)
-        row.addView(seek, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
-        return row
     }
 
-    private fun chipRow(labels: List<String>, selected: Int, onSelect: (Int) -> Unit): LinearLayout {
-        val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        val views = mutableListOf<TextView>()
-        var sel = selected
-        fun paint() {
-            views.forEachIndexed { i, tv ->
-                val isSel = i == sel
-                tv.background = if (isSel) bgRound(CYAN, 10) else bgRound("#0D1B2D", 10, CARD_LINE)
-                tv.setTextColor(color(if (isSel) INK else TEXT))
+    private fun chipRow(options: List<String>, selectedIndex: Int, onPick: (Int) -> Unit): LinearLayout {
+        val wrap = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        fun rebuild(sel: Int) {
+            wrap.removeAllViews()
+            for ((i, opt) in options.withIndex()) {
+                val active = i == sel
+                wrap.addView(TextView(this).apply {
+                    text = opt
+                    textSize = 11f
+                    gravity = Gravity.CENTER
+                    setTextColor(if (active) color(INK) else color(TEXT))
+                    background = bgRound(if (active) CYAN else "#16273D", 10, if (active) null else CARD_LINE)
+                    setPadding(dp(6), dp(10), dp(6), dp(10))
+                    isClickable = true
+                    setOnClickListener { rebuild(i); onPick(i) }
+                }, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f).apply { if (i < options.lastIndex) marginEnd = dp(6) })
             }
         }
-        labels.forEachIndexed { i, label ->
-            val tv = TextView(this).apply {
-                text = label
-                textSize = 12f
-                gravity = Gravity.CENTER
-                setPadding(dp(18), dp(8), dp(18), dp(8))
-                isClickable = true
-                setOnClickListener {
-                    sel = i
-                    paint()
-                    onSelect(i)
+        rebuild(selectedIndex)
+        return wrap
+    }
+
+    private fun colorRow(prefKey: String, def: Int, onChange: () -> Unit): LinearLayout {
+        val wrap = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        val palette = listOf(Color.WHITE, Color.parseColor("#C5D6E8"), Color.parseColor("#FFD166"), Color.parseColor("#6EE7B7"), Color.parseColor("#22D3EE"), Color.parseColor("#FB7185"), Color.BLACK)
+        fun rebuild() {
+            wrap.removeAllViews()
+            val selected = prefs.getInt(prefKey, def)
+            for (c in palette) {
+                val active = c == selected
+                val sw = FrameLayout(this).apply {
+                    background = GradientDrawable().apply {
+                        shape = GradientDrawable.OVAL
+                        setColor(c)
+                        setStroke(dp(if (active) 3 else 1), color(if (active) CYAN else "#334155"))
+                    }
+                    isClickable = true
+                    setOnClickListener { prefs.edit().putInt(prefKey, c).apply(); rebuild(); onChange() }
                 }
+                wrap.addView(sw, LinearLayout.LayoutParams(dp(30), dp(30)).apply { marginEnd = dp(10) })
             }
-            views.add(tv)
-            row.addView(tv, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply {
-                if (i > 0) marginStart = dp(8)
-            })
         }
-        paint()
-        return row
+        rebuild()
+        return wrap
     }
 
-    private fun colorRow(key: String, def: Int, onChange: () -> Unit): LinearLayout {
-        val palette = listOf(
-            Color.WHITE,
-            Color.parseColor("#FDE047"),
-            Color.parseColor("#22D3EE"),
-            Color.parseColor("#86EFAC"),
-            Color.parseColor("#FDBA74"),
-            Color.parseColor("#F472B6")
-        )
-        var current = prefs.getInt(key, def)
-        val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        val dots = mutableListOf<View>()
-        fun paint() {
-            dots.forEachIndexed { i, dot ->
-                val c = palette[i]
-                dot.background = bgRound(hex(c), 14, if (c == current) CYAN else "#2A3E56", 2)
-            }
-        }
-        palette.forEach { c ->
-            val dot = View(this).apply {
-                isClickable = true
-                setOnClickListener {
-                    current = c
-                    prefs.edit().putInt(key, c).apply()
-                    paint()
-                    onChange()
-                }
-            }
-            dots.add(dot)
-            row.addView(dot, LinearLayout.LayoutParams(dp(28), dp(28)).apply { marginEnd = dp(10) })
-        }
-        paint()
-        return row
-    }
-
-    private fun toggleRow(label: String, key: String, def: Boolean): LinearLayout {
-        var on = prefs.getBoolean(key, def)
-        val pill = View(this)
-        val knob = View(this)
-        val track = FrameLayout(this).apply {
-            addView(pill, FrameLayout.LayoutParams(dp(46), dp(26)))
-            addView(knob, FrameLayout.LayoutParams(dp(20), dp(20)).apply { topMargin = dp(3) })
-        }
-        fun paint() {
-            pill.background = bgRound(if (on) CYAN else "#16263C", 13)
-            knob.background = bgRound(if (on) INK else "#7F97B3", 10)
-            val lp = knob.layoutParams as FrameLayout.LayoutParams
-            lp.leftMargin = if (on) dp(23) else dp(3)
-            knob.layoutParams = lp
-        }
-        paint()
-        track.setOnClickListener {
-            on = !on
-            prefs.edit().putBoolean(key, on).apply()
-            paint()
+    private fun toggleRow(title: String, key: String, def: Boolean): LinearLayout {
+        val value = prefs.getBoolean(key, def)
+        val pill = TextView(this).apply {
+            text = if (value) "Açık" else "Kapalı"
+            textSize = 10f
+            setTextColor(if (value) color(INK) else color(TEXT))
+            background = bgRound(if (value) GREEN else "#16273D", 9, if (value) null else CARD_LINE)
+            setPadding(dp(10), dp(5), dp(10), dp(5))
         }
         return LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            setPadding(0, dp(9), 0, dp(9))
+            setPadding(0, dp(10), 0, dp(10))
+            isClickable = true
+            setOnClickListener {
+                val nv = !prefs.getBoolean(key, def)
+                prefs.edit().putBoolean(key, nv).apply()
+                renderTab()
+            }
             addView(TextView(this@MainActivity).apply {
-                text = label
+                text = title
                 textSize = 12.5f
                 setTextColor(color(TEXT))
             }, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
-            addView(track)
+            addView(pill)
         }
     }
 
-    private fun ghostButton(text: String, onClick: () -> Unit): Button = Button(this).apply {
+    private fun emptyNote(text: String): TextView = TextView(this).apply {
         this.text = text
-        isAllCaps = false
         textSize = 12.5f
-        setTextColor(color(TEXT))
-        background = bgRound("#0D1B2D", 12, CARD_LINE)
-        setPadding(dp(6), dp(10), dp(6), dp(10))
-        minHeight = 0
-        minimumHeight = 0
-        setOnClickListener { onClick() }
+        setTextColor(color(MUTED))
+        background = bgRound("#071325", 14, CARD_LINE)
+        setPadding(dp(14), dp(14), dp(14), dp(14))
+        setLineSpacing(4f, 1.05f)
     }
 
-    private fun rowOf(vararg views: View): LinearLayout {
-        val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        views.forEachIndexed { i, v ->
-            row.addView(v, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f).apply {
-                if (i > 0) marginStart = dp(8)
-            })
-        }
-        return row
-    }
+    private fun toast(msg: String) { Toast.makeText(this, msg, Toast.LENGTH_SHORT).show() }
 
-    private fun space(h: Int): Space = Space(this).apply {
-        layoutParams = LinearLayout.LayoutParams(MATCH_PARENT, dp(h))
-    }
-
-    private fun bgRound(bg: String, radiusDp: Int, stroke: String? = null, strokeDp: Int = 1): GradientDrawable =
-        GradientDrawable().apply {
-            setColor(color(bg))
-            cornerRadius = dp(radiusDp).toFloat()
-            if (stroke != null) setStroke(dp(strokeDp), color(stroke))
-        }
-
-    private fun color(v: String): Int = Color.parseColor(v)
-
-    private fun hex(c: Int): String = String.format("#%06X", 0xFFFFFF and c)
-
-    private fun dp(v: Int): Int = (v * resources.displayMetrics.density).toInt()
-
-    private fun toast(msg: String) = Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
-
-    // ---------- permissions ----------
-
-    private fun notificationGranted(): Boolean =
-        Build.VERSION.SDK_INT < 33 || ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
-
-    private fun overlayGranted(): Boolean =
-        Build.VERSION.SDK_INT < Build.VERSION_CODES.M || Settings.canDrawOverlays(this)
-
-    private fun startWithPermissions() {
-        if (Build.VERSION.SDK_INT >= 33 && !notificationGranted()) {
-            requestNotificationPermission()
-            toast("Önce bildirim iznini ver, sonra tekrar Başlat'a dokun.")
-            return
-        }
-        if (!overlayGranted()) {
-            requestOverlayPermission()
-            toast("Önce 'Üstte gösterme' iznini aç, sonra tekrar Başlat'a dokun.")
-            return
-        }
-        requestCapture()
-    }
-
-    private fun requestNotificationPermission() {
-        if (Build.VERSION.SDK_INT >= 33 && !notificationGranted()) {
-            ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.POST_NOTIFICATIONS), 1001)
-        } else toast("Bildirim izni zaten tamam")
-        renderTab()
-    }
-
-    private fun requestOverlayPermission() {
-        if (!overlayGranted()) {
-            startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName")))
-        } else toast("Üstte gösterme izni zaten açık")
-    }
-
-    private fun requestCapture() {
-        val manager = getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
-        projectionLauncher.launch(manager.createScreenCaptureIntent())
-    }
-
-    // ---------- model ----------
-
-    private fun refreshModelState() {
-        val view = modelView ?: return
-        view.text = "Dil paketi durumu kontrol ediliyor…"
-        modelManager.isModelDownloaded(enTrModel)
-            .addOnSuccessListener { downloaded ->
-                view.text = if (downloaded) "EN→TR dil paketi hazır. Çeviri bu paketle yapılır."
-                else "EN→TR dil paketi yüklü değil. \"Paketi indir\" ile indirebilirsin (internet gerekir)."
-            }
-            .addOnFailureListener { e ->
-                view.text = "Dil paketi durumu alınamadı: ${e.localizedMessage ?: "hata"}"
-            }
-    }
+    // ---------- model + voice ----------
 
     private fun downloadModel() {
-        modelView?.text = "EN→TR paketi indiriliyor…"
+        val opts = TranslatorOptions.Builder().setSourceLanguage(TranslateLanguage.ENGLISH).setTargetLanguage(TranslateLanguage.TURKISH).build()
+        val tr = Translation.getClient(opts)
+        toast("Paket indiriliyor…")
         LogStore.append(this, "DURUM", "EN→TR dil paketi indirme başlatıldı")
-        val options = TranslatorOptions.Builder()
-            .setSourceLanguage(TranslateLanguage.ENGLISH)
-            .setTargetLanguage(TranslateLanguage.TURKISH)
-            .build()
-        val client = Translation.getClient(options)
-        client.downloadModelIfNeeded(DownloadConditions.Builder().build())
+        tr.downloadModelIfNeeded(DownloadConditions.Builder().build())
             .addOnSuccessListener {
-                modelView?.text = "EN→TR dil paketi indirildi ve hazır."
+                try { tr.close() } catch (_: Exception) {}
+                toast("Paket hazır")
                 LogStore.append(this, "DURUM", "EN→TR dil paketi indirildi")
-                toast("Dil paketi hazır")
-                client.close()
-                refreshModelState()
             }
             .addOnFailureListener { e ->
-                val msg = e.localizedMessage ?: "bilinmeyen hata"
-                modelView?.text = "Paket indirilemedi: $msg. İnterneti kontrol edip tekrar dene."
+                try { tr.close() } catch (_: Exception) {}
+                val msg = e.localizedMessage ?: "hata"
+                toast("Paket indirilemedi")
                 LogStore.append(this, "HATA", "EN→TR dil paketi indirilemedi: $msg")
-                toast("İndirme başarısız")
-                client.close()
             }
     }
 
     private fun deleteModel() {
-        modelManager.deleteDownloadedModel(enTrModel)
+        val opts = TranslatorOptions.Builder().setSourceLanguage(TranslateLanguage.ENGLISH).setTargetLanguage(TranslateLanguage.TURKISH).build()
+        val tr = Translation.getClient(opts)
+        tr.deleteDownloadedModel()
             .addOnSuccessListener {
+                try { tr.close() } catch (_: Exception) {}
+                toast("Paket silindi")
                 LogStore.append(this, "DURUM", "EN→TR dil paketi silindi")
-                toast("Dil paketi silindi")
-                refreshModelState()
             }
             .addOnFailureListener { e ->
+                try { tr.close() } catch (_: Exception) {}
                 val msg = e.localizedMessage ?: "hata"
+                toast("Paket silinemedi")
                 LogStore.append(this, "HATA", "EN→TR dil paketi silinemedi: $msg")
-                toast("Silinemedi: $msg")
-                refreshModelState()
             }
     }
 
-    // ---------- voice ----------
-
     private fun showVoiceDialog() {
-        val view = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dp(20), dp(6), dp(20), dp(6))
-        }
-        val loading = TextView(this).apply {
-            text = "Türkçe sesler yükleniyor…"
-            textSize = 12.5f
-            setTextColor(color(MUTED))
-            setPadding(0, dp(10), 0, dp(10))
-        }
-        view.addView(loading)
-        val dialog = AlertDialog.Builder(this)
-            .setTitle("Ses seçimi")
-            .setView(ScrollView(this).apply { addView(view) })
-            .setNegativeButton("Kapat", null)
-            .create()
-        dialog.show()
-        var engine: TextToSpeech? = null
-        engine = TextToSpeech(applicationContext) { status ->
-            view.removeAllViews()
-            if (status != TextToSpeech.SUCCESS) {
-                view.addView(TextView(this).apply {
-                    text = "Ses motoru başlatılamadı."
-                    textSize = 12.5f
-                    setTextColor(color(MUTED))
-                    setPadding(0, dp(10), 0, dp(10))
-                })
-                return@TextToSpeech
+        var localTts: TextToSpeech? = null
+        localTts = TextToSpeech(this) { status ->
+            val dialog = AlertDialog.Builder(this).setTitle("Ses seç").setNegativeButton("Kapat", null).create()
+            val view = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                setPadding(dp(16), dp(8), dp(16), dp(8))
             }
             view.addView(voiceOption("Varsayılan ses", { prefs.edit().putString("tts_voice", "").apply() }, dialog))
-            val voices: List<Voice> = try {
-                engine?.voices?.filter { it.locale?.language?.lowercase(Locale.ROOT) == "tr" }?.sortedBy { it.name } ?: emptyList()
-            } catch (_: Exception) {
-                emptyList()
+            if (status == TextToSpeech.SUCCESS) {
+                try {
+                    val voices = localTts?.voices?.filter { it.locale?.language == "tr" || it.locale == Locale("tr", "TR") }
+                        ?: emptyList()
+                    for (v in voices.take(12)) {
+                        view.addView(voiceOption(v.name, { prefs.edit().putString("tts_voice", v.name).apply() }, dialog))
+                    }
+                } catch (_: Exception) {}
             }
-            if (voices.isEmpty()) {
-                view.addView(TextView(this).apply {
-                    text = "Türkçe ses bulunamadı. Cihaz ayarlarından Türkçe konuşma verisini indirebilirsin."
-                    textSize = 12f
-                    setTextColor(color(MUTED))
-                    setPadding(0, dp(10), 0, dp(10))
-                })
-            } else {
-                for (v in voices.take(20)) {
-                    view.addView(voiceOption(v.name, { prefs.edit().putString("tts_voice", v.name).apply() }, dialog))
-                }
-            }
+            dialog.setView(ScrollView(this).apply { addView(view) })
+            dialog.setOnDismissListener { try { localTts?.shutdown() } catch (_: Exception) {} }
+            dialog.show()
         }
     }
 
@@ -1699,6 +1478,9 @@ class MainActivity : ComponentActivity() {
             .putBoolean("merge_repeat", true)
             .putBoolean("ocr_hires", true)
             .putBoolean("debug_log", false)
+            .putBoolean("context_memory", true)
+            .putBoolean("stabilize", true)
+            .putString("glossary_keep", "")
             .apply()
         toast("Varsayılanlara dönüldü")
         renderTab()
