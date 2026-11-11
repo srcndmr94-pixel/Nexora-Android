@@ -2,7 +2,7 @@ name: Apply AI translation
 on:
   push:
     paths:
-      - tools/fix_l10.py
+      - tools/repair_l10.py
 jobs:
   apply:
     runs-on: ubuntu-latest
@@ -12,6 +12,8 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+      - name: Fix patch script encoding
+        run: python3 tools/repair_l10.py
       - name: Patch sources
         run: python3 tools/fix_l10.py
       - name: Commit result
