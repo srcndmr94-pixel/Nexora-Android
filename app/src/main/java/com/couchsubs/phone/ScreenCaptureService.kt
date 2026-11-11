@@ -347,7 +347,7 @@ class ScreenCaptureService : Service(), TextToSpeech.OnInitListener {
                         return@addOnSuccessListener
                     }
                     // Secilen alan altyaziyi kacirdiysa alt bandi bir kez daha dene.
-                    val bandTop = (bitmap.height * 0.68f).toInt().coerceIn(0, bitmap.height - 2)
+                    val bandTop = (bitmap.height * 0.72f).toInt().coerceIn(0, bitmap.height - 2)
                     val bandLeft = (bitmap.width * 0.02f).toInt().coerceIn(0, bitmap.width - 2)
                     val bandRight = (bitmap.width * 0.98f).toInt().coerceIn(bandLeft + 2, bitmap.width)
                     val band = try {
@@ -519,8 +519,13 @@ class ScreenCaptureService : Service(), TextToSpeech.OnInitListener {
         val candidate = pickBestSubtitleCandidate(lines, joined)
         if (candidate.isNullOrBlank()) {
             // keep showing the current subtitle until clear_ms expires; do not spam "not found"
-            if (now - lastNotifyAt > 6000L && !showingSubtitle) {
-                updateStatus("Ekranda altyazı bulunamadı. Ayarlardan alanı veya kaliteyi değiştirin.")
+            if (now - lastNotifyAt > 8000L && !showingSubtitle) {
+                // Kutuyu ekranda tutup altyazi bandini kapatmayalim: gizle, bildirimden haber ver.
+                overlay?.hide()
+                try {
+                    val nm = getSystemService(NotificationManager::class.java)
+                    nm.notify(NOTIFICATION_ID, buildNotification("Altyazı bekleniyor… Oyun altyazı çıkınca çeviri görünecek."))
+                } catch (_: Exception) {}
                 lastNotifyAt = now
             }
             return false

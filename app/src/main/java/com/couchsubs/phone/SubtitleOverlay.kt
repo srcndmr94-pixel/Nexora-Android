@@ -12,6 +12,7 @@ import android.view.Gravity
 import android.view.View
 import android.view.WindowManager
 import android.widget.TextView
+import kotlin.math.max
 
 class SubtitleOverlay(private val context: Context) {
     private val prefs = context.getSharedPreferences("nexora_overlay", Context.MODE_PRIVATE)
@@ -46,7 +47,11 @@ class SubtitleOverlay(private val context: Context) {
         val (gravity, y) = when (position) {
             "top" -> (Gravity.TOP or Gravity.CENTER_HORIZONTAL) to dp(rawOffset.coerceIn(16, 320))
             "middle", "center", "orta" -> (Gravity.CENTER_VERTICAL or Gravity.CENTER_HORIZONTAL) to 0
-            else -> (Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL) to dp(rawOffset.coerceIn(24, 320))
+            else -> {
+                // Oyun altyazisi ekranin en altinda; kutu onu kapatirsa OCR kendi yazimizi okur.
+                val lift = (context.resources.displayMetrics.heightPixels * 0.26f).toInt()
+                (Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL) to max(dp(rawOffset.coerceIn(24, 320)), lift)
+            }
         }
         val lp = layoutParams ?: WindowManager.LayoutParams(
             WindowManager.LayoutParams.MATCH_PARENT,
