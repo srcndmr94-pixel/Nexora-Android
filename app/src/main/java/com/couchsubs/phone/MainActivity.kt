@@ -1099,7 +1099,7 @@ class MainActivity : ComponentActivity() {
         cardView.addView(permissionRow("Üstte gösterme izni", overlayGranted()) { requestOverlayPermission() })
         cardView.addView(space(10))
         cardView.addView(rowOf(
-            ghostButton("Kayıtlar") { showLogs() },
+            ghostButton("Günlük") { showLogs() },
             ghostButton("Paylaş") { shareLogs() },
             ghostButton("Temizle") {
                 LogStore.clear(this)
@@ -1618,23 +1618,49 @@ class MainActivity : ComponentActivity() {
     // ---------- logs ----------
 
     private fun showLogs() {
-        val text = LogStore.read(this).ifBlank { "Henüz kayıt yok." }
         val tv = TextView(this).apply {
-            this.text = text
             setTextColor(color("#C5D6E8"))
             textSize = 11f
             typeface = Typeface.MONOSPACE
             setPadding(dp(16), dp(12), dp(16), dp(12))
             setTextIsSelectable(true)
         }
+        fun render(filter: String) {
+            val all = LogStore.read(this).lineSequence().filter { it.isNotBlank() }
+            val picked = when (filter) {
+                "OKUNAN" -> all.filter { it.contains("[OKU]") || it.contains("[CEVIRI]") }
+                "HATA" -> all.filter { it.contains("[HATA]") }
+                else -> all
+            }.toList().takeLast(300)
+            tv.text = if (picked.isEmpty()) "Bu bölümde kayıt yok." else picked.joinToString("\n")
+            tv.scrollTo(0, 0)
+        }
+        render("TUMU")
         val sc = ScrollView(this).apply {
             setBackgroundColor(color(BG))
             addView(tv)
         }
+        val filters = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setPadding(dp(12), dp(8), dp(12), 0)
+            addView(ghostButton("Tümü") { render("TUMU") }, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f).apply { rightMargin = dp(6) })
+            addView(ghostButton("Okunan") { render("OKUNAN") }, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f).apply { rightMargin = dp(6) })
+            addView(ghostButton("Hatalar") { render("HATA") }, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
+        }
+        val root = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            addView(filters)
+            addView(sc, LinearLayout.LayoutParams(MATCH_PARENT, dp(430)))
+        }
         AlertDialog.Builder(this)
-            .setTitle("NEXORA kayıtları")
-            .setView(sc)
+            .setTitle("Günlük")
+            .setView(root)
             .setPositiveButton("Kapat", null)
+            .setNegativeButton("Temizle") { _, _ ->
+                LogStore.clear(this)
+                render("TUMU")
+                toast("Günlük temizlendi")
+            }
             .show()
     }
 

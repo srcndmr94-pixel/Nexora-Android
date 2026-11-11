@@ -520,6 +520,7 @@ class ScreenCaptureService : Service(), TextToSpeech.OnInitListener {
         if (candidate.isNullOrBlank()) {
             // keep showing the current subtitle until clear_ms expires; do not spam "not found"
             if (now - lastNotifyAt > 8000L && !showingSubtitle) {
+                LogStore.append(this, "OKU", if (joined.isBlank()) "Karede metin yok" else "Okunamadi: ${joined.take(80)}")
                 // Kutuyu ekranda tutup altyazi bandini kapatmayalim: gizle, bildirimden haber ver.
                 overlay?.hide()
                 try {
@@ -543,6 +544,7 @@ class ScreenCaptureService : Service(), TextToSpeech.OnInitListener {
         // Mark presence immediately so clear_ms is measured from recognition, not translation finish.
         lastSubtitleAt = now
         showingSubtitle = true
+        LogStore.append(this, "OKU", "EN: $candidate")
         handleSubtitle(candidate)
         return true
     }
