@@ -141,9 +141,15 @@ class ScreenCaptureService : Service(), TextToSpeech.OnInitListener {
     override fun onCreate() {
         super.onCreate()
         LogStore.append(this, "DURUM", "Servis oluşturuluyor")
+        CrashGuard.install(this)
         running = true
         createNotificationChannel()
-        overlay = SubtitleOverlay(applicationContext)
+        overlay = try {
+            SubtitleOverlay(applicationContext)
+        } catch (e: Exception) {
+            LogStore.append(this, "HATA", "Balon olusturulamadi: " + (e.localizedMessage ?: ""))
+            null
+        }
         worker = HandlerThread("nexora-capture").also { it.start() }
         workerHandler = Handler(worker!!.looper)
         tts = TextToSpeech(applicationContext, this)
@@ -180,6 +186,7 @@ class ScreenCaptureService : Service(), TextToSpeech.OnInitListener {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        LogStore.append(this, "DURUM", "Servis baslatma istegi alindi")
         val resultCode = intent?.getIntExtra(EXTRA_RESULT_CODE, -1) ?: -1
         val data = if (Build.VERSION.SDK_INT >= 33) {
             intent?.getParcelableExtra(EXTRA_DATA, Intent::class.java)
@@ -194,14 +201,21 @@ class ScreenCaptureService : Service(), TextToSpeech.OnInitListener {
             return START_NOT_STICKY
         }
         val projectionData = Intent(data)
-        if (Build.VERSION.SDK_INT >= 34) {
-            startForeground(
-                NOTIFICATION_ID,
-                buildNotification("$APP_NAME hazırlanıyor…"),
-                ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
-            )
-        } else {
-            startForeground(NOTIFICATION_ID, buildNotification("$APP_NAME hazırlanıyor…"))
+        try {
+            if (Build.VERSION.SDK_INT >= 34) {
+                startForeground(
+                    NOTIFICATION_ID,
+                    buildNotification("$APP_NAME hazırlanıyor…"),
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
+                )
+            } else {
+                startForeground(NOTIFICATION_ID, buildNotification("$APP_NAME hazırlanıyor…"))
+            }
+        } catch (e: Exception) {
+            running = false
+            LogStore.append(this, "HATA", "Bildirim baslatilamadi: " + e.javaClass.simpleName + ": " + (e.localizedMessage ?: ""))
+            stopSelf()
+            return START_NOT_STICKY
         }
         running = true
         try {

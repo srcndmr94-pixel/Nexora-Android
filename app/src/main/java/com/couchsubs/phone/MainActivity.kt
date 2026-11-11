@@ -106,6 +106,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         prefs = getSharedPreferences(PREFS, MODE_PRIVATE)
+        CrashGuard.install(this)
         window.statusBarColor = color(BG)
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -119,6 +120,11 @@ class MainActivity : ComponentActivity() {
         setContentView(root)
         renderTab()
         LogStore.append(this, "DURUM", "Uygulama açıldı")
+        LogStore.append(
+            this,
+            "DURUM",
+            "Cihaz: " + Build.MANUFACTURER + " " + Build.MODEL + " | Android " + Build.VERSION.RELEASE + " (SDK " + Build.VERSION.SDK_INT + ")"
+        )
     }
 
     override fun onResume() {
