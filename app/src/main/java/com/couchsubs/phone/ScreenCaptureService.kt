@@ -226,10 +226,10 @@ class ScreenCaptureService : Service(), TextToSpeech.OnInitListener {
         } else {
             DisplayMetrics().also { @Suppress("DEPRECATION") wm.defaultDisplay.getRealMetrics(it) }
         }
-        val captureScale = (prefInt("capture_scale", 70).coerceIn(40, 100)) / 100f
+        val captureScale = (prefInt("capture_scale", 100).coerceIn(40, 100)) / 100f
         val rawW = max(480, (metrics.widthPixels * captureScale).toInt())
         val rawH = max(270, (metrics.heightPixels * captureScale).toInt())
-        val maxDim = when (prefInt("quality", 1)) { 0 -> 720; 2 -> 1280; else -> 960 }
+        val maxDim = when (prefInt("quality", 2)) { 0 -> 720; 2 -> 1280; else -> 960 }
         val longSide = max(rawW, rawH).toFloat()
         val down = if (longSide > maxDim) maxDim / longSide else 1f
         val width = max(480, (rawW * down).toInt())
@@ -334,17 +334,49 @@ class ScreenCaptureService : Service(), TextToSpeech.OnInitListener {
             }
             lastFrameHash = frameHash
             lastFrameAt = now
-            val image = InputImage.fromBitmap(crop, 0)
+            val ocrCrop = upscaleForOcr(crop)
+            val image = InputImage.fromBitmap(ocrCrop, 0)
             recognizer.process(image)
                 .addOnSuccessListener { result ->
-                    try { handleResult(result) } finally {
+                    val handled = try { handleResult(result) } catch (_: Exception) { false }
+                    if (handled) {
+                        if (ocrCrop !== crop) ocrCrop.recycle()
                         crop.recycle()
                         bitmap.recycle()
                         processing.set(false)
+                        return@addOnSuccessListener
                     }
+                    // Secilen alan altyaziyi kacirdiysa alt bandi bir kez daha dene.
+                    val bandTop = (bitmap.height * 0.68f).toInt().coerceIn(0, bitmap.height - 2)
+                    val bandLeft = (bitmap.width * 0.02f).toInt().coerceIn(0, bitmap.width - 2)
+                    val bandRight = (bitmap.width * 0.98f).toInt().coerceIn(bandLeft + 2, bitmap.width)
+                    val band = try {
+                        Bitmap.createBitmap(bitmap, bandLeft, bandTop, bandRight - bandLeft, bitmap.height - bandTop)
+                    } catch (_: Exception) { null }
+                    if (band == null) {
+                        if (ocrCrop !== crop) ocrCrop.recycle()
+                        crop.recycle()
+                        bitmap.recycle()
+                        processing.set(false)
+                        return@addOnSuccessListener
+                    }
+                    val bandOcr = upscaleForOcr(band)
+                    recognizer.process(InputImage.fromBitmap(bandOcr, 0))
+                        .addOnCompleteListener { t ->
+                            try {
+                                if (t.isSuccessful) t.result?.let { r -> handleResult(r) }
+                            } catch (_: Exception) {}
+                            if (bandOcr !== band) bandOcr.recycle()
+                            band.recycle()
+                            if (ocrCrop !== crop) ocrCrop.recycle()
+                            crop.recycle()
+                            bitmap.recycle()
+                            processing.set(false)
+                        }
                 }
                 .addOnFailureListener { e ->
                     LogStore.append(this, "HATA", "OCR hatası: ${e.localizedMessage}")
+                    if (ocrCrop !== crop) ocrCrop.recycle()
                     crop.recycle()
                     bitmap.recycle()
                     processing.set(false)
@@ -461,7 +493,25 @@ class ScreenCaptureService : Service(), TextToSpeech.OnInitListener {
         return score
     }
 
-    private fun handleResult(result: Text) {
+    // Kucuk kirpintilari OCR icin buyut; oyun altyazisi aksi halde minicik kaliyor.
+    private fun upscaleForOcr(src: Bitmap): Bitmap {
+        val factor = when {
+            src.height < 200 -> 3f
+            src.height < 380 -> 2f
+            else -> 1f
+        }
+        if (factor <= 1f) return src
+        return try {
+            Bitmap.createScaledBitmap(
+                src,
+                max(16, (src.width * factor).toInt()),
+                max(16, (src.height * factor).toInt()),
+                true
+            )
+        } catch (_: Exception) { src }
+    }
+
+    private fun handleResult(result: Text): Boolean {
         val now = System.currentTimeMillis()
         val lines = result.textBlocks.flatMap { b -> b.lines.mapNotNull { it.text?.trim() } }
             .filter { it.isNotBlank() }
@@ -473,22 +523,23 @@ class ScreenCaptureService : Service(), TextToSpeech.OnInitListener {
                 updateStatus("Ekranda altyazı bulunamadı. Ayarlardan alanı veya kaliteyi değiştirin.")
                 lastNotifyAt = now
             }
-            return
+            return false
         }
         val key = candidate.lowercase(Locale.ROOT)
-        if (key == lastSource && showingSubtitle && now - lastShownAt < 4500L) return
+        if (key == lastSource && showingSubtitle && now - lastShownAt < 4500L) return false
         // Kendi gosterdigimiz ceviri tekrar okunursa sonsuz dongu olur.
         val shownNorm = Normalizer.normalize(lastShownText, Normalizer.Form.NFKC).lowercase(Locale.ROOT).trim()
-        if (shownNorm.length >= 4 && key == shownNorm) return
-        if (key.any { it in "\u015f\u011f\u0131\u015e\u011e\u0130" }) return
+        if (shownNorm.length >= 4 && key == shownNorm) return false
+        if (key.any { it in "\u015f\u011f\u0131\u015e\u011e\u0130" }) return false
         val partialKey = if (candidate.length >= 8) candidate.lowercase(Locale.ROOT).take(min(24, candidate.length)) else candidate.lowercase(Locale.ROOT)
-        if (partialKey == lastPartialKey && now - lastPartialAt < 1200L && key != lastSource) return
+        if (partialKey == lastPartialKey && now - lastPartialAt < 1200L && key != lastSource) return false
         lastPartialKey = partialKey
         lastPartialAt = now
         // Mark presence immediately so clear_ms is measured from recognition, not translation finish.
         lastSubtitleAt = now
         showingSubtitle = true
         handleSubtitle(candidate)
+        return true
     }
 
     private fun handleSubtitle(raw: String) {
@@ -510,7 +561,7 @@ class ScreenCaptureService : Service(), TextToSpeech.OnInitListener {
                 lastShownAt = System.currentTimeMillis()
                 lastSubtitleAt = lastShownAt
                 showingSubtitle = true
-                overlay?.show(cached)
+                overlay?.show(cached, src)
                 maybeSpeak(cached)
                 LogStore.append(this, "CEVIRI", "EN: $src || TR(${if (mode == "online") "internet" else "cihaz"}): $cached")
             }
@@ -552,7 +603,7 @@ class ScreenCaptureService : Service(), TextToSpeech.OnInitListener {
                                 lastShownAt = System.currentTimeMillis()
                                 lastSubtitleAt = lastShownAt
                                 showingSubtitle = true
-                                overlay?.show(out)
+                                overlay?.show(out, src)
                                 maybeSpeak(out)
                                 LogStore.append(this, "CEVIRI", "EN: $src || TR(internet): $out")
                             }
@@ -597,7 +648,7 @@ class ScreenCaptureService : Service(), TextToSpeech.OnInitListener {
                         lastShownAt = System.currentTimeMillis()
                         lastSubtitleAt = lastShownAt
                         showingSubtitle = true
-                        overlay?.show(out)
+                        overlay?.show(out, src)
                         maybeSpeak(out)
                         LogStore.append(this, "CEVIRI", "EN: $src || TR(cihaz): $out")
                     }

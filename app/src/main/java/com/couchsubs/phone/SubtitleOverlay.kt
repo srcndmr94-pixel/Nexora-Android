@@ -84,7 +84,7 @@ class SubtitleOverlay(private val context: Context) {
     }
 
     @Synchronized
-    fun show(text: String) {
+    fun show(text: String, sourceText: String = "") {
         mainHandler.post {
             if (text.isBlank()) {
                 view.text = ""
@@ -92,7 +92,23 @@ class SubtitleOverlay(private val context: Context) {
                 return@post
             }
             applyStyle()
-            view.text = text
+            val srcLine = sourceText.trim()
+            if (srcLine.isBlank()) {
+                view.text = text
+            } else {
+                view.maxLines = prefs.getInt("max_lines", 2).coerceIn(1, 4) + 1
+                val sp = android.text.SpannableString("$text\n$srcLine")
+                val start = text.length + 1
+                sp.setSpan(
+                    android.text.style.RelativeSizeSpan(0.6f), start, sp.length,
+                    android.text.Spannable.SPAN_EXCLUSIVE_EXCLUSIVE
+                )
+                sp.setSpan(
+                    android.text.style.ForegroundColorSpan(Color.argb(215, 205, 222, 255)),
+                    start, sp.length, android.text.Spannable.SPAN_EXCLUSIVE_EXCLUSIVE
+                )
+                view.text = sp
+            }
             view.visibility = View.VISIBLE
             view.bringToFront()
             val params = buildParams()
