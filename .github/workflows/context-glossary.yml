@@ -1,0 +1,74 @@
+name: Add context memory and glossary to subtitles
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/context-glossary.yml'
+permissions:
+  contents: write
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Apply fix
+        run: |
+          base64 -d <<'B64' | gunzip > /tmp/patch6.py
+          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
+          B64
+          python3 /tmp/patch6.py .
+      - name: Commit
+        run: |
+          git config user.name "nexora-bot"
+          git config user.email "bot@nexora.local"
+          git add app/src/main/java/com/couchsubs/phone/ScreenCaptureService.kt app/src/main/java/com/couchsubs/phone/MainActivity.kt
+          git commit -m "feat: stabilize subtitle lines, keep glossary terms, and remember context"
+          git push
