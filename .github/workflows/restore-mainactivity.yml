@@ -19,12 +19,23 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Restore known-good MainActivity.kt
+      - name: Download known-good MainActivity.kt (pinned commit)
         run: |
           set -euo pipefail
           TARGET=app/src/main/java/com/couchsubs/phone/MainActivity.kt
-          git checkout f44cecc91ba3b35e3d293521a3ec2df3c1b5222d -- "$TARGET"
-          echo "restored bytes: $(wc -c < "$TARGET")"
+          URL="https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/f44cecc91ba3b35e3d293521a3ec2df3c1b5222d/${TARGET}"
+          curl -sSfL "$URL" -o /tmp/ma_good.kt
+          echo "downloaded: $(wc -c < /tmp/ma_good.kt) bytes"
+          echo "sha256: $(sha256sum /tmp/ma_good.kt | cut -d' ' -f1)"
+          test "$(wc -c < /tmp/ma_good.kt)" -gt 50000
+          head -1 /tmp/ma_good.kt | grep -qx 'package com.couchsubs.phone'
+          cp /tmp/ma_good.kt "$TARGET"
+          echo "target now: $(wc -c < "$TARGET") bytes"
+
+      - name: Commit and push the restored file
+        run: |
+          set -euo pipefail
+          TARGET=app/src/main/java/com/couchsubs/phone/MainActivity.kt
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add "$TARGET"
