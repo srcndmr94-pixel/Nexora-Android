@@ -1,0 +1,47 @@
+name: Keep overlay off the subtitle band
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/overlay-lift.yml'
+permissions:
+  contents: write
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Apply fix
+        run: |
+          base64 -d <<'B64' | gunzip > /tmp/patch4.py
+          H4sIACMn9GoC/5VW3W7bNhS+91OcskgjBjbtpEMWuEiHLE03o0k8JMaArekCWqJtVhIpkJQdpQiw
+          p1mvc7Or3SVPsifZIWUnzt+CCjBgkef3O985Ry+htdaCWCdSjbtQulFry580ZF5o40DqJtjKNkHj
+          z4iG0drBtj9i3IynH9c/gRxBJlS0OKLwFtZBZFYAYaQx5PhnG9VZwd2EfdZSRd5IEwgvirY1cTvn
+          UrU/8ylvxzrHXxlPbDm07WKilSC00UgEutA8iQraxSBcaRQGxnSBbosmCFWHv01C+IQyI1CYBj3L
+          p8ILWVRd0iEz8lCxCUrMMqnENjlRaGZmpBORrQ0ZUUQehywJYk3I+FBktNsAfBADyzBy5SIUoPBi
+          G9brG/8YLhGE48o6ke+dSReR9zu9fVixEFS2VxICKxAFg807higNRuY5W0ysyHgsokUUCI6dxqfF
+          fYQ96pjkcWyEULu8QHVxLMxUxoKlDjHV0+xprXLopMtEfypMxqtawaJwqEHwhwYW78ESxvES1il8
+          KF0JPHMVP5cw5ArRlZBydJFzK1XX30GqVZknHERquJIKywD8HFY2NletF064gapMuZEsePHAIwvJ
+          nJFo1GiZsJlMxsKxgThzv0rhy/mMxIma36faYZFZ7vPO+ZnXxCRa9S2hd5zC0hM43XoL0U+GT6Wr
+          2I/9waB/ANrA4mR373Cwd3T6c/+o93v/cLCzT8FpSIrI8Fl/NLIYTqyFiUVPRRvfNeH1RodS0rxh
+          CiGPevzSgHtPuw39qlQLrBG4ZTQzJ1XC30Dqy4Fo1yWQxnLo7x5BKrAw4PVyiXXSaWnYAw9TnkEm
+          R77bo1grhygi/awuMXrLEmmRidWBcEbGlk2EHE/cL/IMI4Y16LCNzRFlTveQx/SB6W8GEKsUPQNi
+          MwR719cFwjkv7lA7p3MSeLpBYWdB0TIrFc95JVXMA1xVueBrxTOZv8EBkohYwFBmiTQyTxDfCTaq
+          AewO1kDJwBaMKC9kJiKzej/bski4E8eOu9KeRGTP1ynhH/8gn9bICT1Rq7QxwoZP0A5aYyNfuizz
+          Y2c+WcPt8kx5Yp4o7YJoK7fjO5Pl1ght4NA4VSNf1Htcm7PqQ42BqKMEh6/FUx0dEOrCWJ5nODee
+          QOi+D11PlR/YRCbiEXI4Uz3C9wUjVY6hY1fXyc9HWnSonRzJGCmu1QFXfCxMtxtn3Frm9wp91JzK
+          mfJ6VXTYH/Te93Z3Br3+4WnvHaZSYi7LRiNSM+b6EoYiRTxlpc2/f/613IR4d/X1+jK9vvRcuvoq
+          pogGjK/+Nlf/KKRQygh9GMkFoId4AtFpF/bOYlF4dxS+XDSwPvXY9azAhYj7IR9iSRDxuoi4Kprz
+          Oq/XkvMdRZA4kdIzaOGSsi4kUu04XMybnU5nH169ghd2ome4+hazHj2S/1PcekbxhntjXtRd9prC
+          byIRqSeNQ3LgsAkNpsqbAYU8ynArsDux+yp7ng2030/RUCLRivmACaNlc+t2tNwOgo4n4LJoC/t8
+          ebI+a/f7jW+wC8Tbajkdsg0fGWEx+g+N+jXsRfxeoI3CSLRJCl9nkYCtSYs2wmcTDRMq9MT8SCNN
+          /gMN9W9nlwkAAA==
+          B64
+          python3 /tmp/patch4.py .
+      - name: Commit
+        run: |
+          git config user.name "nexora-bot"
+          git config user.email "bot@nexora.local"
+          git add app/src/main/java/com/couchsubs/phone/ScreenCaptureService.kt app/src/main/java/com/couchsubs/phone/SubtitleOverlay.kt
+          git commit -m "fix: lift subtitle box off the game subtitle band so OCR can read it"
+          git push
