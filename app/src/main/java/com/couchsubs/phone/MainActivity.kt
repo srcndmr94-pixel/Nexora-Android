@@ -503,12 +503,12 @@ class MainActivity : ComponentActivity() {
         cardView.addView(rowOf(
             ghostButton("Alanı Ayarla") { showAreaDialog() },
             ghostButton("Tam Ekran") {
-                prefs.edit().putString("position", "middle").putInt("offset_dp", 56).apply()
+                prefs.edit().putString("position", "middle").putString("region", "full").putInt("offset_dp", 56).apply()
                 toast("Alan: tam ekran")
                 renderTab()
             },
             ghostButton("Sıfırla") {
-                prefs.edit().putString("position", "bottom").putInt("offset_dp", 56).apply()
+                prefs.edit().putString("position", "bottom").putString("region", "bottom").putInt("offset_dp", 56).apply()
                 toast("Alan sıfırlandı")
                 renderTab()
             }
@@ -539,7 +539,7 @@ class MainActivity : ComponentActivity() {
                 setPadding(0, dp(14), 0, dp(14))
                 isClickable = true
                 setOnClickListener {
-                    prefs.edit().putString("position", key).apply()
+                    prefs.edit().putString("position", key).putString("region", key).apply()
                     toast("Alan: $label")
                     dialog.dismiss()
                     renderTab()
@@ -736,7 +736,8 @@ class MainActivity : ComponentActivity() {
             setPadding(0, 0, 0, dp(6))
         })
         cardView.addView(chipRow(listOf("Üst", "Orta", "Alt"), positionIndex) { i ->
-            prefs.edit().putString("position", listOf("top", "middle", "bottom")[i]).apply()
+            val chipRegion = listOf("top", "middle", "bottom")[i]
+            prefs.edit().putString("position", chipRegion).putString("region", chipRegion).apply()
             toast("Konum: ${listOf("Üst", "Orta", "Alt")[i]}")
         })
 
@@ -1405,6 +1406,7 @@ class MainActivity : ComponentActivity() {
             .putInt("text_color", Color.WHITE)
             .putInt("max_lines", 2)
             .putString("position", "bottom")
+            .putString("region", "bottom")
             .putInt("offset_dp", 56)
             .putInt("ocr_interval_ms", 250)
             .putInt("clear_ms", 2800)

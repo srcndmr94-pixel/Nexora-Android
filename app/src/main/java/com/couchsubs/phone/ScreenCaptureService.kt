@@ -270,7 +270,11 @@ class ScreenCaptureService : Service(), TextToSpeech.OnInitListener {
                 overlay?.show("")
             }
             if (now - lastFrameAt < idle) return
-            val region = (getSharedPreferences(PREFS, MODE_PRIVATE).getString("region", "bottom") ?: "bottom").lowercase(Locale.ROOT)
+            val regionPrefs = getSharedPreferences(PREFS, MODE_PRIVATE)
+            // Ayar ekranindaki secim "position" anahtarina yaziliyor; "region" da kabul edilir.
+            val region = (regionPrefs.getString("region", null)
+                ?: regionPrefs.getString("position", "bottom")
+                ?: "bottom").trim().lowercase(Locale.ROOT)
             val (l, t, r, b) = when (region) {
                 "top" -> floatArrayOf(0.05f, 0.03f, 0.95f, 0.28f)
                 "middle", "center", "orta" -> floatArrayOf(0.05f, 0.32f, 0.95f, 0.68f)
@@ -373,12 +377,18 @@ class ScreenCaptureService : Service(), TextToSpeech.OnInitListener {
     }
 
     private fun pickBestSubtitleCandidate(lines: List<String>, joined: String): String? {
-        val parts = (lines + joined).map { cleanupCandidate(it) }.filter { it.isNotBlank() }.distinct()
         var best: String? = null
         var bestScore = Int.MIN_VALUE
-        for (c in parts) {
-            if (!isLikelySubtitle(c)) continue
-            val score = scoreSubtitle(c)
+        val all = lines + joined
+        for ((i, raw) in all.withIndex()) {
+            val c = cleanupCandidate(raw)
+            if (c.isBlank() || !isLikelySubtitle(c)) continue
+            var score = scoreSubtitle(c)
+            // Altyazi kirpilan alanin altinda durur; alttaki satirlar daha degerli.
+            if (i < lines.size) score += i * 6 else score -= 10
+            // Uzun baslik/afis yazilari altyazi sayilmaz.
+            if (c.length > 100) score -= 25
+            if (c.length > 140) score -= 25
             if (score > bestScore) { bestScore = score; best = c }
         }
         return best
@@ -443,6 +453,10 @@ class ScreenCaptureService : Service(), TextToSpeech.OnInitListener {
         }
         val key = candidate.lowercase(Locale.ROOT)
         if (key == lastSource && showingSubtitle && now - lastShownAt < 4500L) return
+        // Kendi gosterdigimiz ceviri tekrar okunursa sonsuz dongu olur.
+        val shownNorm = Normalizer.normalize(lastShownText, Normalizer.Form.NFKC).lowercase(Locale.ROOT).trim()
+        if (shownNorm.length >= 4 && key == shownNorm) return
+        if (key.any { it in "\u015f\u011f\u0131\u015e\u011e\u0130" }) return
         val partialKey = if (candidate.length >= 8) candidate.lowercase(Locale.ROOT).take(min(24, candidate.length)) else candidate.lowercase(Locale.ROOT)
         if (partialKey == lastPartialKey && now - lastPartialAt < 1200L && key != lastSource) return
         lastPartialKey = partialKey
