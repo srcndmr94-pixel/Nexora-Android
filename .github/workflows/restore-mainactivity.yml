@@ -1,0 +1,36 @@
+name: Restore MainActivity
+
+# Tek seferlik onarim: bozulan MainActivity.kt dosyasini f44cecc9 commit'indeki
+# saglam surumden birebir geri koyar. Is bitince bu dosya silinecek.
+
+on:
+  push:
+    paths:
+      - '.github/workflows/restore-mainactivity.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  restore:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Restore known-good MainActivity.kt
+        run: |
+          set -euo pipefail
+          TARGET=app/src/main/java/com/couchsubs/phone/MainActivity.kt
+          git checkout f44cecc91ba3b35e3d293521a3ec2df3c1b5222d -- "$TARGET"
+          echo "restored bytes: $(wc -c < "$TARGET")"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add "$TARGET"
+          if git diff --cached --quiet; then
+            echo 'nothing to restore'
+            exit 0
+          fi
+          git commit -m 'fix(build): restore MainActivity.kt from f44cecc9' -m 'The file was overwritten with a shell command in 15c6607, which broke compileDebugKotlin. Restored the last known-good version.'
+          git push
